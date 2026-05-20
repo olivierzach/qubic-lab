@@ -1,0 +1,22 @@
+[project]
+name = "qubic-lab"
+version = "0.1.0"
+description = "Playground for 4x4x4 tic-tac-toe (Qubic) agents."
+requires-python = ">=3.10"
+
+dependencies = [
+  "numpy>=1.26",
+  "torch>=2.2",
+  "rich>=13.7",
+  "fastapi>=0.110",
+  "uvicorn>=0.30",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]

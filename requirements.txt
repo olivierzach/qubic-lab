@@ -1,0 +1,6 @@
+numpy>=1.26
+torch>=2.2
+rich>=13.7
+fastapi>=0.110
+uvicorn>=0.30
+pytest>=8.0

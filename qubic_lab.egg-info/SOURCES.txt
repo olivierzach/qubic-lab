@@ -1,0 +1,12 @@
+README.md
+pyproject.toml
+qubic_lab/__init__.py
+qubic_lab/game.py
+qubic_lab.egg-info/PKG-INFO
+qubic_lab.egg-info/SOURCES.txt
+qubic_lab.egg-info/dependency_links.txt
+qubic_lab.egg-info/requires.txt
+qubic_lab.egg-info/top_level.txt
+qubic_lab/cli/__init__.py
+qubic_lab/cli/play.py
+tests/test_game.py
