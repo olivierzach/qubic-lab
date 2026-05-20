@@ -4,3 +4,4 @@ __pycache__/
 runs/
 .cache/
 .DS_Store
+qubic_lab.egg-info/
