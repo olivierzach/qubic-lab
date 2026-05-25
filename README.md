@@ -95,9 +95,13 @@ you can build lineage from coarse sweeps into longer offline runs.
 
 ## Optimization dashboard
 
-Run the local dashboard:
+Build and run the local dashboard:
 
 ```bash
+cd web
+npm install
+npm run build
+cd ..
 uvicorn qubic_lab.web:app --reload --port 8011
 ```
 
@@ -107,6 +111,12 @@ X/O/draw rates, generated artifacts, and the learned empty-board value heatmap f
 `z` layer. The main viewer renders the `n x n x n` Qubic board as a rotatable 3D value
 lattice with local greedy direction arrows, plus real-time multi-panel training plots
 for outcome rates, optimization loss/update magnitude, entropy, and KL.
+
+The React dashboard has three working areas:
+
+- Runs: browse saved runs and tournament output.
+- Analyze: inspect model policy/value on a 3D Qubic board.
+- Play: play against a selected model with top-move hints and value overlays.
 
 ## Milestones
 

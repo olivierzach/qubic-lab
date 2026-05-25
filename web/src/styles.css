@@ -1,0 +1,107 @@
+:root {
+  color-scheme: dark;
+  --bg: #0f1214;
+  --panel: #171d21;
+  --panel2: #101519;
+  --line: #2c3a40;
+  --text: #e6ecef;
+  --muted: #97a8ae;
+  --green: #67d2a7;
+  --red: #f07c6b;
+  --yellow: #f5c15d;
+}
+
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+.topbar {
+  width: min(1440px, calc(100vw - 28px));
+  margin: 0 auto;
+  padding: 22px 0 14px;
+  display: flex;
+  justify-content: space-between;
+  gap: 20px;
+  align-items: end;
+}
+h1, h2, h3, p { margin-top: 0; }
+.topbar p { color: var(--muted); margin-bottom: 0; }
+nav, .toolbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+button, select {
+  min-height: 38px;
+  border: 1px solid #40545d;
+  background: #202b31;
+  color: var(--text);
+  border-radius: 6px;
+  padding: 7px 11px;
+  font: inherit;
+}
+button.active, button:hover { border-color: var(--green); }
+
+.layout {
+  width: min(1440px, calc(100vw - 28px));
+  margin: 0 auto 40px;
+  display: grid;
+  grid-template-columns: 320px 1fr;
+  gap: 16px;
+}
+aside, .panel, article, .summary, .json {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+aside {
+  padding: 14px;
+  display: grid;
+  gap: 12px;
+  align-content: start;
+}
+label { display: grid; gap: 6px; color: var(--muted); font-size: 13px; }
+.panel { padding: 14px; display: grid; gap: 16px; min-width: 0; }
+.status { display: grid; gap: 6px; color: var(--muted); border-top: 1px solid var(--line); padding-top: 12px; }
+
+.summary {
+  padding: 12px;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+.summary span { display: block; color: var(--muted); font-size: 12px; margin-bottom: 4px; }
+.summary strong { font-size: 24px; }
+.topmoves { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.topmoves span { width: 100%; }
+.topmoves b { color: var(--yellow); font-size: 13px; }
+
+.board3d, .chart {
+  width: 100%;
+  background: var(--panel2);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  display: block;
+}
+.board3d { aspect-ratio: 5 / 3; cursor: grab; }
+.chart { aspect-ratio: 15 / 8; }
+
+.rungrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 12px;
+}
+article { padding: 12px; }
+article h3 { font-size: 16px; margin-bottom: 8px; }
+article p { color: var(--muted); font-size: 13px; margin-bottom: 6px; overflow-wrap: anywhere; }
+.json {
+  padding: 12px;
+  overflow: auto;
+  color: #cfe0e4;
+}
+
+@media (max-width: 900px) {
+  .layout { grid-template-columns: 1fr; }
+  .topbar { align-items: start; flex-direction: column; }
+  .summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}

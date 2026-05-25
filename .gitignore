@@ -5,3 +5,5 @@ runs/
 .cache/
 .DS_Store
 qubic_lab.egg-info/
+web/node_modules/
+web/dist/
