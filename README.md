@@ -112,11 +112,22 @@ X/O/draw rates, generated artifacts, and the learned empty-board value heatmap f
 lattice with local greedy direction arrows, plus real-time multi-panel training plots
 for outcome rates, optimization loss/update magnitude, entropy, and KL.
 
-The React dashboard has three working areas:
+The React UI is split into two focused apps:
 
-- Runs: browse saved runs and tournament output.
-- Analyze: inspect model policy/value on a 3D Qubic board.
-- Play: play against a selected model with top-move hints and value overlays.
+- `/runs`: browse saved runs, inspect plots/artifacts, start short PPO/GRPO runs,
+  run tournaments, and generate self-play dataset artifacts.
+- `/play`: play against a selected model on the 3D board with value overlays,
+  top-move arrows, and explicit coordinate buttons for every legal move.
+
+Generate offline self-play data directly:
+
+```bash
+python -m qubic_lab.cli.generate_selfplay --model-id random --size 3 --games 100
+```
+
+Datasets are written under `runs/datasets/<timestamp>/` with `manifest.json` and
+`dataset.jsonl`. Current PPO/GRPO runs still train from online self-play rollouts;
+the dataset artifact is the foundation for the next offline imitation/RL stage.
 
 ## Milestones
 

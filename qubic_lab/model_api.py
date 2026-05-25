@@ -11,7 +11,7 @@ from typing import Any
 import numpy as np
 import torch
 
-from qubic_lab.game import State, apply_move, flatten_board, idx_to_xyz, legal_moves, terminal
+from qubic_lab.game import State, apply_move, idx_to_xyz, legal_moves, terminal
 from qubic_lab.neural import PolicyValueNet, legal_mask, obs_from_state
 from qubic_lab.rl_tabular import state_key
 
@@ -35,7 +35,11 @@ def layers_to_state(layers: list[list[list[int]]], player: int) -> State:
 
 
 def vector_to_layers(values: np.ndarray, size: int) -> list[list[list[float]]]:
-    return values.reshape((size, size, size)).round(5).tolist()
+    layers = np.zeros((size, size, size), dtype=np.float32)
+    for idx, value in enumerate(values):
+        x, y, z = idx_to_xyz(idx, size)
+        layers[z, y, x] = float(value)
+    return layers.round(5).tolist()
 
 
 @dataclass

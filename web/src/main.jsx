@@ -17,20 +17,276 @@ const emptyBoard = (size) =>
   );
 
 const moveIndex = (x, y, z, size) => z * size * size + y * size + x;
+const moveCoord = (move, size) => ({
+  z: Math.floor(move / (size * size)),
+  y: Math.floor((move % (size * size)) / size),
+  x: move % size,
+});
 
-function Board3D({ analysis, onMove }) {
+function Header({ active }) {
+  return (
+    <header className="topbar">
+      <div>
+        <h1>Qubic Lab</h1>
+        <p>{active === 'play' ? 'Play and inspect selected agents.' : 'Review runs, datasets, artifacts, and evaluations.'}</p>
+      </div>
+      <nav>
+        <a className={active === 'runs' ? 'active' : ''} href="/runs">Run viewer</a>
+        <a className={active === 'play' ? 'active' : ''} href="/play">Play app</a>
+      </nav>
+    </header>
+  );
+}
+
+function Home() {
+  return (
+    <>
+      <Header active="home" />
+      <main className="home">
+        <a href="/runs">
+          <strong>Run viewer</strong>
+          <span>Start training, inspect artifacts, compare models, and generate self-play datasets.</span>
+        </a>
+        <a href="/play">
+          <strong>Play app</strong>
+          <span>Play against a chosen model with a 3D board, heatmap, and explicit legal move controls.</span>
+        </a>
+      </main>
+    </>
+  );
+}
+
+function RunViewerApp() {
+  const [runs, setRuns] = useState([]);
+  const [models, setModels] = useState([]);
+  const [selectedRun, setSelectedRun] = useState('');
+  const [selectedModel, setSelectedModel] = useState('random');
+  const [runData, setRunData] = useState({ latest: null, history: [] });
+  const [liveState, setLiveState] = useState(null);
+  const [tournament, setTournament] = useState(null);
+  const [dataset, setDataset] = useState(null);
+  const [busy, setBusy] = useState('');
+  const [error, setError] = useState('');
+
+  const loadRuns = async () => {
+    const data = await api('/api/runs');
+    setRuns(data.runs || []);
+    if (!selectedRun && data.runs?.[0]) setSelectedRun(data.runs[0].run_dir);
+  };
+
+  const loadModels = async () => {
+    const data = await api('/api/models');
+    setModels(data.models || []);
+    const preferred = data.models?.find((m) => m.kind === 'neural') || data.models?.[0];
+    if (preferred && selectedModel === 'random') setSelectedModel(preferred.id);
+  };
+
+  const loadRun = async (runDir = selectedRun) => {
+    if (!runDir) return;
+    setError('');
+    const data = await api(`/api/run?run_dir=${encodeURIComponent(runDir)}`);
+    setRunData(data);
+  };
+
+  useEffect(() => {
+    loadRuns().catch((err) => setError(String(err)));
+    loadModels().catch((err) => setError(String(err)));
+    const timer = setInterval(async () => {
+      const state = await api('/api/state');
+      setLiveState(state);
+      if (state.latest) setRunData({ latest: state.latest, history: state.history || [] });
+    }, 1500);
+    return () => clearInterval(timer);
+  }, []);
+
+  const startRun = async (method) => {
+    setBusy(method);
+    setError('');
+    try {
+      await api('/api/start', {
+        method: 'POST',
+        body: JSON.stringify({ method, size: 3, episodes: 5000, batch_episodes: 64, log_every: 100 }),
+      });
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setBusy('');
+    }
+  };
+
+  const stopRun = async () => {
+    await api('/api/stop', { method: 'POST' });
+  };
+
+  const runTournament = async () => {
+    setBusy('tournament');
+    setError('');
+    try {
+      const ids = models.slice(0, 6).map((m) => m.id);
+      const data = await api('/api/eval/tournament', {
+        method: 'POST',
+        body: JSON.stringify({ model_ids: ids, size: 3, games: 12 }),
+      });
+      setTournament(data);
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setBusy('');
+    }
+  };
+
+  const generateDataset = async () => {
+    setBusy('dataset');
+    setError('');
+    try {
+      const data = await api('/api/selfplay/generate', {
+        method: 'POST',
+        body: JSON.stringify({ model_id: selectedModel, size: 3, games: 100, greedy: false }),
+      });
+      setDataset(data);
+      await loadRuns();
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setBusy('');
+    }
+  };
+
+  return (
+    <>
+      <Header active="runs" />
+      <main className="layout">
+        <aside>
+          <label>Saved run<select value={selectedRun} onChange={(e) => setSelectedRun(e.target.value)}>
+            {runs.map((r) => <option key={r.run_dir} value={r.run_dir}>{r.method} · {r.run_id || r.run_dir}</option>)}
+          </select></label>
+          <button onClick={() => loadRun()}>Load selected run</button>
+          <button onClick={() => startRun('ppo')} disabled={Boolean(busy)}>Start PPO 5k</button>
+          <button onClick={() => startRun('grpo')} disabled={Boolean(busy)}>Start GRPO 5k</button>
+          <button onClick={stopRun}>Stop active run</button>
+          <label>Dataset model<select value={selectedModel} onChange={(e) => setSelectedModel(e.target.value)}>
+            {models.map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}
+          </select></label>
+          <button onClick={generateDataset} disabled={Boolean(busy)}>Generate 100-game dataset</button>
+          <button onClick={runTournament} disabled={Boolean(busy)}>Run tournament</button>
+          <div className="status">
+            <span>{liveState?.running ? 'training active' : 'idle'}</span>
+            <span>{busy ? `working: ${busy}` : runData.latest?.method || 'no run loaded'}</span>
+            {error && <b>{error}</b>}
+          </div>
+        </aside>
+        <section className="panel">
+          <RunSummary latest={runData.latest} />
+          <MetricsChart history={runData.history || []} />
+          {runData.latest?.heatmap && <Board3D analysis={runData.latest} compact />}
+          <Artifacts latest={runData.latest} />
+          <RunList runs={runs} onLoad={(runDir) => { setSelectedRun(runDir); loadRun(runDir); }} />
+          {dataset && <JsonBlock title="Latest self-play dataset" value={dataset} />}
+          {tournament && <JsonBlock title="Tournament" value={tournament.leaderboard} />}
+        </section>
+      </main>
+    </>
+  );
+}
+
+function PlayApp() {
+  const [models, setModels] = useState([]);
+  const [selectedModel, setSelectedModel] = useState('random');
+  const [humanPlayer, setHumanPlayer] = useState(1);
+  const [game, setGame] = useState(null);
+  const [analysis, setAnalysis] = useState(null);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    api('/api/models').then((data) => {
+      setModels(data.models || []);
+      const preferred = data.models?.find((m) => m.kind === 'neural') || data.models?.[0];
+      if (preferred) setSelectedModel(preferred.id);
+    }).catch((err) => setError(String(err)));
+  }, []);
+
+  const selected = models.find((m) => m.id === selectedModel);
+  const size = selected?.size || 3;
+
+  const analyzeOpening = async () => {
+    setError('');
+    const data = await api('/api/analyze/position', {
+      method: 'POST',
+      body: JSON.stringify({ model_id: selectedModel, board: emptyBoard(size), player: 1 }),
+    });
+    setGame(null);
+    setAnalysis(data);
+  };
+
+  const newGame = async () => {
+    setError('');
+    const data = await api('/api/play/new', {
+      method: 'POST',
+      body: JSON.stringify({ model_id: selectedModel, size, human_player: humanPlayer }),
+    });
+    setGame({ ...data, human_moves: [] });
+    setAnalysis(data.state);
+  };
+
+  const playMove = async (move) => {
+    if (!game || game.done) return;
+    setError('');
+    const moves = [...(game.human_moves || []), move];
+    try {
+      const data = await api('/api/play/move', {
+        method: 'POST',
+        body: JSON.stringify({ model_id: selectedModel, size, human_player: humanPlayer, moves }),
+      });
+      setGame({ ...data, human_moves: moves });
+      setAnalysis(data.state);
+    } catch (err) {
+      setError(String(err));
+    }
+  };
+
+  return (
+    <>
+      <Header active="play" />
+      <main className="play-layout">
+        <section className="panel play-main">
+          <div className="toolbar">
+            <label>Model<select value={selectedModel} onChange={(e) => setSelectedModel(e.target.value)}>
+              {models.map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}
+            </select></label>
+            <label>Side<select value={humanPlayer} onChange={(e) => setHumanPlayer(Number(e.target.value))}>
+              <option value={1}>Human X</option>
+              <option value={-1}>Human O</option>
+            </select></label>
+            <button onClick={newGame}>New game</button>
+            <button onClick={analyzeOpening}>Analyze opening</button>
+          </div>
+          {error && <div className="error">{error}</div>}
+          <Summary analysis={analysis} game={game} />
+          <Board3D analysis={analysis} onMove={game && !game.done ? playMove : null} />
+        </section>
+        <aside className="play-side">
+          <MoveButtons analysis={analysis} onMove={game && !game.done ? playMove : null} />
+          <MoveList game={game} />
+        </aside>
+      </main>
+    </>
+  );
+}
+
+function Board3D({ analysis, onMove, compact = false }) {
   const canvasRef = useRef(null);
-  const viewRef = useRef({ yaw: -0.72, pitch: 0.72, dragging: false, last: null });
+  const viewRef = useRef({ yaw: -0.72, pitch: 0.72, dragging: false, moved: false, last: null });
 
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
-    const draw = () => drawBoard(ctx, canvas, analysis, viewRef.current);
+    const draw = () => drawBoard(ctx, canvas, analysis, viewRef.current, Boolean(onMove));
     draw();
 
     const down = (event) => {
       viewRef.current.dragging = true;
+      viewRef.current.moved = false;
       viewRef.current.last = { x: event.clientX, y: event.clientY };
       canvas.setPointerCapture(event.pointerId);
     };
@@ -38,6 +294,7 @@ function Board3D({ analysis, onMove }) {
       if (!viewRef.current.dragging || !viewRef.current.last) return;
       const dx = event.clientX - viewRef.current.last.x;
       const dy = event.clientY - viewRef.current.last.y;
+      if (Math.hypot(dx, dy) > 2) viewRef.current.moved = true;
       viewRef.current.yaw += dx * 0.01;
       viewRef.current.pitch = Math.max(0.15, Math.min(1.35, viewRef.current.pitch + dy * 0.01));
       viewRef.current.last = { x: event.clientX, y: event.clientY };
@@ -48,7 +305,7 @@ function Board3D({ analysis, onMove }) {
       viewRef.current.last = null;
     };
     const click = (event) => {
-      if (!onMove || !analysis?.heatmap) return;
+      if (!onMove || !analysis?.heatmap || viewRef.current.moved) return;
       const rect = canvas.getBoundingClientRect();
       const sx = ((event.clientX - rect.left) / rect.width) * canvas.width;
       const sy = ((event.clientY - rect.top) / rect.height) * canvas.height;
@@ -68,7 +325,7 @@ function Board3D({ analysis, onMove }) {
     };
   }, [analysis, onMove]);
 
-  return <canvas ref={canvasRef} className="board3d" width="1200" height="720" />;
+  return <canvas ref={canvasRef} className={`board3d ${compact ? 'compact' : ''}`} width="1200" height="720" />;
 }
 
 function flattenHeatmap(heatmap) {
@@ -100,17 +357,16 @@ function nearestPoint(analysis, view, canvas, sx, sy) {
   const scale = Math.min(canvas.width, canvas.height) / (size <= 3 ? 4.4 : 5.4);
   const cx = canvas.width * 0.53;
   const cy = canvas.height * 0.55;
-  const points = flattenHeatmap(analysis.heatmap);
   let best = null;
-  for (const p of points) {
+  for (const p of flattenHeatmap(analysis.heatmap)) {
     const s = project(p, size, view, scale, cx, cy);
     const d = Math.hypot(s.x - sx, s.y - sy);
-    if (d < 32 && (!best || d < best.d)) best = { ...p, d };
+    if (d < 42 && (!best || d < best.d)) best = { ...p, d };
   }
   return best;
 }
 
-function drawBoard(ctx, canvas, analysis, view) {
+function drawBoard(ctx, canvas, analysis, view, playable) {
   const w = canvas.width;
   const h = canvas.height;
   ctx.clearRect(0, 0, w, h);
@@ -119,9 +375,10 @@ function drawBoard(ctx, canvas, analysis, view) {
   if (!analysis?.heatmap) {
     ctx.fillStyle = '#9badb4';
     ctx.font = '22px Inter, system-ui';
-    ctx.fillText('Load a run or choose a model to inspect the 3D board.', 36, 52);
+    ctx.fillText('Choose a model, load a run, or start a game.', 36, 52);
     return;
   }
+
   const size = analysis.heatmap.length;
   const points = flattenHeatmap(analysis.heatmap);
   const maxAbs = Math.max(1e-4, ...points.map((p) => Math.abs(p.value)));
@@ -139,6 +396,7 @@ function drawBoard(ctx, canvas, analysis, view) {
     ctx.lineTo(pb.x, pb.y);
     ctx.stroke();
   };
+
   for (let y = 0; y < size; y += 1) {
     for (let z = 0; z < size; z += 1) line({ x: 0, y, z }, { x: size - 1, y, z }, 'rgba(130,150,158,.25)');
     for (let x = 0; x < size; x += 1) line({ x, y, z: 0 }, { x, y, z: size - 1 }, 'rgba(130,150,158,.25)');
@@ -147,26 +405,26 @@ function drawBoard(ctx, canvas, analysis, view) {
     for (let z = 0; z < size; z += 1) line({ x, y: 0, z }, { x, y: size - 1, z }, 'rgba(130,150,158,.16)');
   }
 
+  drawArrows(ctx, analysis, view, scale, cx, cy);
   const legal = new Set(analysis.legal_moves || []);
   const occupied = new Map();
   analysis.board?.forEach((layer, z) => layer.forEach((row, y) => row.forEach((v, x) => {
     if (v) occupied.set(moveIndex(x, y, z, size), v);
   })));
 
-  drawArrows(ctx, analysis, view, scale, cx, cy);
   const sorted = points.map((p) => ({ ...p, screen: project(p, size, view, scale, cx, cy) })).sort((a, b) => a.screen.depth - b.screen.depth);
   const bestMove = analysis.top_moves?.[0]?.move;
   for (const p of sorted) {
     const idx = moveIndex(p.x, p.y, p.z, size);
     const occ = occupied.get(idx);
     const norm = p.value / maxAbs;
-    const radius = occ ? 24 : 9 + 25 * Math.abs(norm);
+    const radius = occ ? 25 : 10 + 26 * Math.abs(norm);
     ctx.beginPath();
     ctx.arc(p.screen.x, p.screen.y, radius, 0, Math.PI * 2);
-    ctx.fillStyle = occ === 1 ? '#67d2a7' : occ === -1 ? '#f07c6b' : valueColor(norm, legal.has(idx) ? 0.9 : 0.25);
+    ctx.fillStyle = occ === 1 ? '#67d2a7' : occ === -1 ? '#f07c6b' : valueColor(norm, legal.has(idx) ? 0.92 : 0.22);
     ctx.fill();
-    ctx.strokeStyle = idx === bestMove ? '#f5c15d' : 'rgba(235,242,244,.5)';
-    ctx.lineWidth = idx === bestMove ? 5 : 1.2;
+    ctx.strokeStyle = idx === bestMove ? '#f5c15d' : playable && legal.has(idx) ? '#dce7e9' : 'rgba(235,242,244,.38)';
+    ctx.lineWidth = idx === bestMove ? 5 : playable && legal.has(idx) ? 2 : 1;
     ctx.stroke();
     if (occ) {
       ctx.fillStyle = '#07100d';
@@ -176,12 +434,16 @@ function drawBoard(ctx, canvas, analysis, view) {
       ctx.fillText(occ === 1 ? 'X' : 'O', p.screen.x, p.screen.y + 1);
     }
   }
+
   ctx.textAlign = 'left';
   ctx.textBaseline = 'alphabetic';
   ctx.fillStyle = '#e6ecef';
   ctx.font = '19px Inter, system-ui';
   const best = analysis.top_moves?.[0];
-  ctx.fillText(best ? `best move (${best.x},${best.y},${best.z}) p=${best.prob.toFixed(3)} value=${Number(analysis.value || 0).toFixed(3)}` : 'terminal position', 32, 38);
+  ctx.fillText(best ? `best (${best.x},${best.y},${best.z}) p=${best.prob.toFixed(3)} value=${Number(analysis.value || 0).toFixed(3)}` : 'terminal position', 32, 38);
+  ctx.fillStyle = '#9badb4';
+  ctx.font = '14px Inter, system-ui';
+  ctx.fillText('green: X  red: O  amber arrows: top policy moves  drag: rotate', 32, h - 28);
 }
 
 function drawArrows(ctx, analysis, view, scale, cx, cy) {
@@ -239,7 +501,7 @@ function drawMetrics(ctx, canvas, history) {
   if (history.length < 2) {
     ctx.fillStyle = '#9badb4';
     ctx.font = '17px Inter, system-ui';
-    ctx.fillText('Start or load a run to draw live scientific plots.', 56, 70);
+    ctx.fillText('Load or start a run to draw live plots.', 56, 70);
     return;
   }
   const xs = history.map((d) => d.episode);
@@ -297,196 +559,100 @@ function series(ctx, p, history, minX, maxX, getY, color) {
   ctx.stroke();
 }
 
-function App() {
-  const [tab, setTab] = useState('analyze');
-  const [runs, setRuns] = useState([]);
-  const [models, setModels] = useState([]);
-  const [selectedRun, setSelectedRun] = useState('');
-  const [selectedModel, setSelectedModel] = useState('random');
-  const [runState, setRunState] = useState(null);
-  const [analysis, setAnalysis] = useState(null);
-  const [history, setHistory] = useState([]);
-  const [play, setPlay] = useState({ size: 3, human_player: 1, moves: [], state: null });
-  const [tournament, setTournament] = useState(null);
-
-  const loadRuns = async () => {
-    const data = await api('/api/runs');
-    setRuns(data.runs || []);
-    if (!selectedRun && data.runs?.[0]) setSelectedRun(data.runs[0].run_dir);
-  };
-  const loadModels = async () => {
-    const data = await api('/api/models');
-    setModels(data.models || []);
-    const first = data.models?.find((m) => m.kind === 'neural') || data.models?.[0];
-    if (first && selectedModel === 'random') setSelectedModel(first.id);
-  };
-
-  useEffect(() => {
-    loadRuns();
-    loadModels();
-    const timer = setInterval(async () => {
-      const state = await api('/api/state');
-      setRunState(state);
-      if (state.latest) {
-        setAnalysis(state.latest);
-        setHistory(state.history || []);
-      }
-    }, 1200);
-    return () => clearInterval(timer);
-  }, []);
-
-  const loadRun = async (runDir = selectedRun) => {
-    if (!runDir) return;
-    const data = await api(`/api/run?run_dir=${encodeURIComponent(runDir)}`);
-    setAnalysis(data.latest);
-    setHistory(data.history || []);
-  };
-
-  const analyzeEmpty = async () => {
-    const model = models.find((m) => m.id === selectedModel);
-    const size = model?.size || 3;
-    const data = await api('/api/analyze/position', {
-      method: 'POST',
-      body: JSON.stringify({ model_id: selectedModel, board: emptyBoard(size), player: 1 }),
-    });
-    setAnalysis(data);
-  };
-
-  const startPlay = async () => {
-    const model = models.find((m) => m.id === selectedModel);
-    const data = await api('/api/play/new', {
-      method: 'POST',
-      body: JSON.stringify({ model_id: selectedModel, size: model?.size || 3, human_player: play.human_player }),
-    });
-    setPlay({ size: model?.size || 3, human_player: play.human_player, moves: [], state: data });
-    setAnalysis(data.state);
-  };
-
-  const playMove = async (move) => {
-    if (play.state?.done) return;
-    const moves = [...play.moves, move];
-    try {
-      const data = await api('/api/play/move', {
-        method: 'POST',
-        body: JSON.stringify({ model_id: selectedModel, size: play.size, human_player: play.human_player, moves }),
-      });
-      setPlay({ ...play, moves, state: data });
-      setAnalysis(data.state);
-    } catch (error) {
-      console.error(error);
-    }
-  };
-
-  const startRun = async (method) => {
-    await api('/api/start', {
-      method: 'POST',
-      body: JSON.stringify({ method, size: 3, episodes: 1000, batch_episodes: 32, log_every: 100 }),
-    });
-  };
-
-  const runTournament = async () => {
-    const ids = models.slice(0, 5).map((m) => m.id);
-    const data = await api('/api/eval/tournament', {
-      method: 'POST',
-      body: JSON.stringify({ model_ids: ids, size: 3, games: 8 }),
-    });
-    setTournament(data);
-  };
-
-  const modelOptions = models.map((m) => <option key={m.id} value={m.id}>{m.label}</option>);
-
+function RunSummary({ latest }) {
+  const recent = latest?.recent || {};
   return (
-    <div>
-      <header className="topbar">
-        <div>
-          <h1>Qubic Lab</h1>
-          <p>Research dashboard for Qubic agents, replay data, tournaments, and play.</p>
-        </div>
-        <nav>
-          {['runs', 'analyze', 'play'].map((name) => (
-            <button className={tab === name ? 'active' : ''} onClick={() => setTab(name)} key={name}>{name}</button>
-          ))}
-        </nav>
-      </header>
-
-      <main className="layout">
-        <aside>
-          <label>Model<select value={selectedModel} onChange={(e) => setSelectedModel(e.target.value)}>{modelOptions}</select></label>
-          <label>Saved run<select value={selectedRun} onChange={(e) => setSelectedRun(e.target.value)}>
-            {runs.map((r) => <option key={r.run_dir} value={r.run_dir}>{r.method} · {r.run_id || r.run_dir}</option>)}
-          </select></label>
-          <button onClick={() => loadRun()}>Load run</button>
-          <button onClick={analyzeEmpty}>Analyze empty board</button>
-          <button onClick={() => startRun('ppo')}>Start PPO 1k</button>
-          <button onClick={() => startRun('grpo')}>Start GRPO 1k</button>
-          <button onClick={runTournament}>Run tournament</button>
-          <div className="status">
-            <span>{runState?.running ? 'training' : 'idle'}</span>
-            <span>{analysis?.method || analysis?.model?.method || 'no run loaded'}</span>
-          </div>
-        </aside>
-
-        <section className="panel">
-          {tab === 'runs' && <Runs runs={runs} tournament={tournament} />}
-          {tab === 'analyze' && (
-            <>
-              <Summary analysis={analysis} />
-              <Board3D analysis={analysis} />
-              <MetricsChart history={history} />
-            </>
-          )}
-          {tab === 'play' && (
-            <>
-              <div className="toolbar">
-                <select value={play.human_player} onChange={(e) => setPlay({ ...play, human_player: Number(e.target.value) })}>
-                  <option value={1}>Human X</option>
-                  <option value={-1}>Human O</option>
-                </select>
-                <button onClick={startPlay}>New game</button>
-              </div>
-              <Summary analysis={analysis} />
-              <Board3D analysis={analysis} onMove={playMove} />
-              <MoveList game={play.state} />
-            </>
-          )}
-        </section>
-      </main>
+    <div className="summary">
+      <div><span>Method</span><strong>{latest?.method || 'none'}</strong></div>
+      <div><span>Episode</span><strong>{latest?.episode || 0}</strong></div>
+      <div><span>X win</span><strong>{Math.round((recent.x_win_rate || 0) * 100)}%</strong></div>
+      <div><span>Draw</span><strong>{Math.round((recent.draw_rate || 0) * 100)}%</strong></div>
     </div>
   );
 }
 
-function Summary({ analysis }) {
+function Summary({ analysis, game }) {
   const top = analysis?.top_moves?.slice(0, 5) || [];
+  const status = game?.done ? (game.winner === 0 ? 'draw' : `${game.winner === 1 ? 'X' : 'O'} wins`) : 'active';
   return (
     <div className="summary">
       <div><span>Value</span><strong>{Number(analysis?.value || 0).toFixed(3)}</strong></div>
-      <div><span>Player</span><strong>{analysis?.player === -1 ? 'O' : 'X'}</strong></div>
-      <div><span>Status</span><strong>{analysis?.done ? `Winner ${analysis.winner}` : 'active'}</strong></div>
+      <div><span>To move</span><strong>{analysis?.player === -1 ? 'O' : 'X'}</strong></div>
+      <div><span>Status</span><strong>{status}</strong></div>
       <div className="topmoves"><span>Top moves</span>{top.map((m) => <b key={m.move}>({m.x},{m.y},{m.z}) {m.prob.toFixed(2)}</b>)}</div>
     </div>
   );
 }
 
-function Runs({ runs, tournament }) {
+function Artifacts({ latest }) {
+  if (!latest?.run_dir) return null;
+  const files = ['analysis.md', 'analysis.json', 'curves.png', 'first_move_heatmap.png', 'first_move_policy.json', 'model.pt'];
+  return (
+    <div className="artifact-row">
+      {files.map((file) => (
+        <a key={file} href={`/api/artifact?run_dir=${encodeURIComponent(latest.run_dir)}&file=${file}`} target="_blank" rel="noreferrer">{file}</a>
+      ))}
+    </div>
+  );
+}
+
+function RunList({ runs, onLoad }) {
   return (
     <div>
-      <h2>Runs</h2>
+      <h2>Saved runs</h2>
       <div className="rungrid">
         {runs.slice(0, 24).map((r) => (
           <article key={r.run_dir}>
-            <h3>{r.method} · {r.run_id}</h3>
+            <h3>{r.method || 'run'} · {r.run_id || r.run_dir}</h3>
             <p>{r.run_dir}</p>
-            <p>X {Math.round((r.recent?.x_win_rate || 0) * 100)}% · O {Math.round((r.recent?.o_win_rate || 0) * 100)}% · ep {r.episode}</p>
+            <p>X {Math.round((r.recent?.x_win_rate || 0) * 100)}% · O {Math.round((r.recent?.o_win_rate || 0) * 100)}% · ep {r.episode || 0}</p>
+            <button onClick={() => onLoad(r.run_dir)}>Open</button>
           </article>
         ))}
       </div>
-      {tournament && <pre className="json">{JSON.stringify(tournament.leaderboard, null, 2)}</pre>}
+    </div>
+  );
+}
+
+function MoveButtons({ analysis, onMove }) {
+  const moves = useMemo(() => {
+    const size = analysis?.heatmap?.length || 3;
+    return (analysis?.legal_moves || []).map((move) => ({ move, ...moveCoord(move, size) }));
+  }, [analysis]);
+  return (
+    <div className="move-panel">
+      <h2>Legal moves</h2>
+      <div className="move-grid">
+        {moves.map((m) => (
+          <button key={m.move} disabled={!onMove} onClick={() => onMove?.(m.move)}>
+            {m.x},{m.y},{m.z}
+          </button>
+        ))}
+      </div>
     </div>
   );
 }
 
 function MoveList({ game }) {
-  return <pre className="json">{game ? JSON.stringify({ done: game.done, winner: game.winner, history: game.history }, null, 2) : 'Start a game, then click legal cells on the board.'}</pre>;
+  return (
+    <div className="move-panel">
+      <h2>Game history</h2>
+      <pre className="json">{game ? JSON.stringify({ done: game.done, winner: game.winner, history: game.history }, null, 2) : 'Start a game to make moves.'}</pre>
+    </div>
+  );
 }
 
-createRoot(document.getElementById('root')).render(<App />);
+function JsonBlock({ title, value }) {
+  return (
+    <div>
+      <h2>{title}</h2>
+      <pre className="json">{JSON.stringify(value, null, 2)}</pre>
+    </div>
+  );
+}
+
+const path = window.location.pathname;
+const root = createRoot(document.getElementById('root'));
+if (path.startsWith('/play')) root.render(<PlayApp />);
+else if (path.startsWith('/runs')) root.render(<RunViewerApp />);
+else root.render(<Home />);

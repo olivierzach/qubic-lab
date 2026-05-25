@@ -18,6 +18,7 @@ from qubic_lab.model_api import (
 )
 from qubic_lab.rl_deep import DeepRLConfig, train_deep_rl
 from qubic_lab.rl_tabular import TabularConfig, train_tabular
+from qubic_lab.selfplay import SelfPlayConfig, generate_selfplay_dataset
 
 app = FastAPI(title="Qubic Lab")
 
@@ -229,6 +230,23 @@ async def tournament(request: Request) -> JSONResponse:
             seed=int(payload.get("seed", 0)),
         )
     )
+
+
+@app.post("/api/selfplay/generate")
+async def selfplay_generate(request: Request) -> JSONResponse:
+    payload = await request.json()
+    run_dir = generate_selfplay_dataset(
+        SelfPlayConfig(
+            model_id=str(payload.get("model_id", "random")),
+            opponent_id=payload.get("opponent_id"),
+            size=int(payload.get("size", 3)),
+            games=int(payload.get("games", 100)),
+            seed=int(payload.get("seed", 0)),
+            greedy=bool(payload.get("greedy", False)),
+        )
+    )
+    manifest = json.loads((run_dir / "manifest.json").read_text())
+    return JSONResponse(manifest)
 
 
 WEB_DIST = Path(__file__).resolve().parents[1] / "web" / "dist"

@@ -12,7 +12,7 @@ from typing import Callable
 import numpy as np
 
 from qubic_lab.artifacts import load_metrics, write_plot_artifacts
-from qubic_lab.game import State, apply_move, flatten_board, legal_moves, terminal
+from qubic_lab.game import State, apply_move, flatten_board, idx_to_xyz, legal_moves, terminal
 from qubic_lab.runs import resolve_run_dir
 
 
@@ -88,7 +88,11 @@ def expected_policy_value(row: np.ndarray, moves: np.ndarray, epsilon: float) ->
 def empty_board_heatmap(q: QTable, size: int) -> list[list[list[float]]]:
     empty = state_key(State.new(size))
     row = get_q(q, empty, size**3)
-    return row.reshape((size, size, size)).round(4).tolist()
+    layers = np.zeros((size, size, size), dtype=np.float32)
+    for idx, value in enumerate(row):
+        x, y, z = idx_to_xyz(idx, size)
+        layers[z, y, x] = float(value)
+    return layers.round(4).tolist()
 
 
 def _write_json(path: Path, payload: dict) -> None:

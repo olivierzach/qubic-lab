@@ -6,7 +6,7 @@ import numpy as np
 import torch
 from torch import nn
 
-from qubic_lab.game import State, flatten_board, legal_moves
+from qubic_lab.game import State, flatten_board, idx_to_xyz, legal_moves
 
 
 def obs_from_state(state: State) -> np.ndarray:
@@ -88,4 +88,8 @@ def empty_board_policy_heatmap(model: PolicyValueNet, size: int, *, device: str 
         mask_t = torch.as_tensor(mask, dtype=torch.bool, device=device).unsqueeze(0)
         logits, _ = model(obs_t)
         probs = torch.softmax(masked_logits(logits, mask_t), dim=-1).squeeze(0).cpu().numpy()
-    return probs.reshape((size, size, size)).round(5).tolist()
+    layers = np.zeros((size, size, size), dtype=np.float32)
+    for idx, value in enumerate(probs):
+        x, y, z = idx_to_xyz(idx, size)
+        layers[z, y, x] = float(value)
+    return layers.round(5).tolist()
