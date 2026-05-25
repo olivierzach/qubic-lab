@@ -8,6 +8,7 @@ from typing import Any
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 
+from qubic_lab.rl_deep import DeepRLConfig, train_deep_rl
 from qubic_lab.rl_tabular import TabularConfig, train_tabular
 
 app = FastAPI(title="Qubic Lab")
@@ -143,6 +144,8 @@ INDEX_HTML = """
           <option value="sarsa">SARSA</option>
           <option value="expected_sarsa">Expected SARSA</option>
           <option value="monte_carlo">Monte Carlo</option>
+          <option value="ppo">PPO</option>
+          <option value="grpo">GRPO</option>
         </select></label>
         <label>Size <input id="size" type="number" min="2" max="4" value="3"></label>
         <label>Episodes <input id="episodes" type="number" min="1" value="20000"></label>
@@ -151,6 +154,7 @@ INDEX_HTML = """
         <label>Epsilon <input id="epsilon" type="number" min="0" max="1" step="0.01" value="0.35"></label>
         <label>Seed <input id="seed" type="number" value="0"></label>
         <label>Log every <input id="log_every" type="number" min="1" value="100"></label>
+        <label>Batch eps <input id="batch_episodes" type="number" min="1" value="32"></label>
       </div>
       <div class="actions">
         <button class="primary" id="startBtn">Start</button>
@@ -181,7 +185,7 @@ INDEX_HTML = """
   </main>
   <script>
     const $ = (id) => document.getElementById(id);
-    const fields = ["size", "episodes", "alpha", "gamma", "epsilon", "seed", "log_every"];
+    const fields = ["size", "episodes", "alpha", "gamma", "epsilon", "seed", "log_every", "batch_episodes"];
 
     function pct(x) { return `${Math.round((x || 0) * 100)}%`; }
     function color(v) {
@@ -369,9 +373,12 @@ def _on_snapshot(payload: dict[str, Any]) -> None:
         _trim_history()
 
 
-def _worker(cfg: TabularConfig, stop_event: threading.Event) -> None:
+def _worker(cfg: TabularConfig | DeepRLConfig, stop_event: threading.Event) -> None:
     try:
-        train_tabular(cfg, callback=_on_snapshot, stop_event=stop_event)
+        if cfg.method in {"ppo", "grpo"}:
+            train_deep_rl(cfg, callback=_on_snapshot, stop_event=stop_event)
+        else:
+            train_tabular(cfg, callback=_on_snapshot, stop_event=stop_event)
     finally:
         with _lock:
             global _thread
@@ -405,16 +412,28 @@ async def start(request: Request) -> JSONResponse:
         if _thread is not None and _thread.is_alive():
             raise HTTPException(status_code=409, detail="run already active")
 
-        cfg = TabularConfig(
-            method=str(payload.get("method", "q_learning")),
-            size=int(payload.get("size", 3)),
-            episodes=int(payload.get("episodes", 10_000)),
-            alpha=float(payload.get("alpha", 0.25)),
-            gamma=float(payload.get("gamma", 0.98)),
-            epsilon=float(payload.get("epsilon", 0.35)),
-            seed=int(payload.get("seed", 0)),
-            log_every=int(payload.get("log_every", 100)),
-        )
+        method = str(payload.get("method", "q_learning"))
+        if method in {"ppo", "grpo"}:
+            cfg = DeepRLConfig(
+                method=method,
+                size=int(payload.get("size", 3)),
+                episodes=int(payload.get("episodes", 2_000)),
+                batch_episodes=int(payload.get("batch_episodes", 32)),
+                gamma=float(payload.get("gamma", 0.99)),
+                seed=int(payload.get("seed", 0)),
+                log_every=int(payload.get("log_every", 100)),
+            )
+        else:
+            cfg = TabularConfig(
+                method=method,
+                size=int(payload.get("size", 3)),
+                episodes=int(payload.get("episodes", 10_000)),
+                alpha=float(payload.get("alpha", 0.25)),
+                gamma=float(payload.get("gamma", 0.98)),
+                epsilon=float(payload.get("epsilon", 0.35)),
+                seed=int(payload.get("seed", 0)),
+                log_every=int(payload.get("log_every", 100)),
+            )
         _latest = None
         _history = []
         _stop_event = threading.Event()

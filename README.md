@@ -29,8 +29,9 @@ python -m qubic_lab.cli.play --opponent random
 
 ## Offline RL runs
 
-The first runnable RL path is a family of tabular self-play baselines for generalized
-`n x n x n` Qubic boards: Q-learning, SARSA, Expected SARSA, and Monte Carlo control.
+The first runnable RL path is a family of self-play baselines for generalized
+`n x n x n` Qubic boards: Q-learning, SARSA, Expected SARSA, Monte Carlo control,
+PPO, and a GRPO-style group-relative policy-gradient trainer.
 Start with `--size 3`; `--size 4` is supported by the engine, but tabular learning grows
 quickly and should be treated as a diagnostic baseline before neural/self-play agents.
 
@@ -53,6 +54,29 @@ python -m qubic_lab.cli.run_suite \
   --root runs/suites/q3_baselines
 ```
 
+Train neural agents:
+
+```bash
+python -m qubic_lab.cli.train_deep \
+  --method ppo \
+  --size 3 \
+  --episodes 2000 \
+  --batch-episodes 32 \
+  --run-dir runs/deep/q3_ppo
+
+python -m qubic_lab.cli.train_deep \
+  --method grpo \
+  --size 3 \
+  --episodes 2000 \
+  --batch-episodes 32 \
+  --run-dir runs/deep/q3_grpo
+```
+
+The PPO implementation uses a small policy-value MLP, clipped policy ratios, value loss,
+and entropy regularization. The GRPO-style trainer uses grouped self-play episode returns
+as normalized relative advantages, omitting the value term to keep the method close to the
+group-relative idea.
+
 Each run writes:
 
 - `config.json`
@@ -64,6 +88,7 @@ Each run writes:
 - `first_move_heatmap.png`
 - `first_move_policy.json`
 - `q_table.npz`
+- `model.pt` for neural PPO/GRPO runs
 
 `metadata.json` carries the method, timestamp, git commit, and optional parent run, so
 you can build lineage from coarse sweeps into longer offline runs.
@@ -88,7 +113,7 @@ X/O/draw rates, generated artifacts, and the learned empty-board value heatmap f
 3. ✅ Tabular Q-learning, SARSA, Expected SARSA, and Monte Carlo baselines
 4. ✅ Run lineage metadata + analysis artifacts
 5. ✅ Local dashboard for live and saved runs with value heatmaps
-6. ⏳ MCTS baseline (no NN)
-7. ⏳ Policy+value net + self-play data generation
+6. ✅ Neural PPO and GRPO-style self-play trainers
+7. ⏳ MCTS baseline (no NN)
 8. ⏳ Training loop + evaluation gate + checkpoints
 9. ⏳ Web UI to play against trained agents
