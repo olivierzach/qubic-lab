@@ -11,6 +11,7 @@ from qubic_lab.game import State, apply_move, legal_moves, render_layers, termin
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser()
     p.add_argument("--opponent", choices=["random"], default="random")
+    p.add_argument("--size", type=int, default=4)
     return p.parse_args()
 
 
@@ -18,7 +19,7 @@ def main() -> None:
     args = parse_args()
     console = Console()
 
-    s = State.new()
+    s = State.new(args.size)
 
     while True:
         console.print(render_layers(s))
@@ -37,7 +38,7 @@ def main() -> None:
             lm = set(int(x) for x in legal_moves(s))
             mv = None
             while mv not in lm:
-                txt = console.input("Your move (0-63): ")
+                txt = console.input(f"Your move (0-{args.size**3 - 1}): ")
                 try:
                     mv = int(txt)
                 except ValueError:
