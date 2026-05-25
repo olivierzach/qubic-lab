@@ -104,7 +104,9 @@ uvicorn qubic_lab.web:app --reload --port 8011
 Open `http://127.0.0.1:8011`, choose a method, board size, and training budget, and start
 a run. The dashboard can also load saved offline runs under `runs/`, showing rolling
 X/O/draw rates, generated artifacts, and the learned empty-board value heatmap for each
-`z` layer.
+`z` layer. The main viewer renders the `n x n x n` Qubic board as a rotatable 3D value
+lattice with local greedy direction arrows, plus real-time multi-panel training plots
+for outcome rates, optimization loss/update magnitude, entropy, and KL.
 
 ## Milestones
 

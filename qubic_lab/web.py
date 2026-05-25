@@ -101,7 +101,7 @@ INDEX_HTML = """
     .metric span { display: block; color: var(--muted); font-size: 12px; }
     .metric strong { display: block; margin-top: 3px; font-size: 24px; line-height: 1; }
     .viz { padding: 14px; display: grid; gap: 18px; }
-    canvas { width: 100%; height: 220px; background: #101519; border: 1px solid var(--line); border-radius: 8px; }
+    canvas { width: 100%; height: 360px; background: #101519; border: 1px solid var(--line); border-radius: 8px; }
     #board3d { height: 460px; }
     .board3d-tools { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
     .board3d-tools .subtle { min-width: 180px; }
@@ -181,11 +181,11 @@ INDEX_HTML = """
       </div>
       <div class="viz">
         <div class="board3d-tools">
-          <div class="subtle" id="board3dLabel">3D value lattice</div>
+          <div class="subtle" id="board3dLabel">3D value lattice + greedy arrows</div>
           <button id="resetViewBtn">Reset view</button>
         </div>
         <canvas id="board3d" width="1000" height="560"></canvas>
-        <canvas id="chart" width="900" height="260"></canvas>
+        <canvas id="chart" width="1000" height="560"></canvas>
         <div class="artifacts" id="artifacts"></div>
         <div class="layers" id="layers"></div>
       </div>
@@ -314,6 +314,56 @@ INDEX_HTML = """
       ctx.stroke();
     }
 
+    function neighborValue(heatmap, p) {
+      return Number(heatmap[p.z]?.[p.y]?.[p.x]) || 0;
+    }
+
+    function bestNeighbor(p, heatmap, size) {
+      const candidates = [
+        { x: p.x + 1, y: p.y, z: p.z, axis: "+x" },
+        { x: p.x - 1, y: p.y, z: p.z, axis: "-x" },
+        { x: p.x, y: p.y + 1, z: p.z, axis: "+y" },
+        { x: p.x, y: p.y - 1, z: p.z, axis: "-y" },
+        { x: p.x, y: p.y, z: p.z + 1, axis: "+z" },
+        { x: p.x, y: p.y, z: p.z - 1, axis: "-z" },
+      ].filter(q => q.x >= 0 && q.x < size && q.y >= 0 && q.y < size && q.z >= 0 && q.z < size);
+      let best = null;
+      for (const q of candidates) {
+        const value = neighborValue(heatmap, q);
+        if (!best || value > best.value) best = { ...q, value };
+      }
+      return best;
+    }
+
+    function drawArrowHead(ctx, from, to, color) {
+      const angle = Math.atan2(to.y - from.y, to.x - from.x);
+      const len = 10;
+      ctx.fillStyle = color;
+      ctx.beginPath();
+      ctx.moveTo(to.x, to.y);
+      ctx.lineTo(to.x - len * Math.cos(angle - 0.45), to.y - len * Math.sin(angle - 0.45));
+      ctx.lineTo(to.x - len * Math.cos(angle + 0.45), to.y - len * Math.sin(angle + 0.45));
+      ctx.closePath();
+      ctx.fill();
+    }
+
+    function drawArrow3d(ctx, a, b, size, scale, cx, cy, alpha) {
+      const pa = project3d(a, size, scale, cx, cy);
+      const pb = project3d(b, size, scale, cx, cy);
+      const sx = pa.x + (pb.x - pa.x) * 0.28;
+      const sy = pa.y + (pb.y - pa.y) * 0.28;
+      const ex = pa.x + (pb.x - pa.x) * 0.72;
+      const ey = pa.y + (pb.y - pa.y) * 0.72;
+      const color = `rgba(245,193,93,${alpha})`;
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 2.2;
+      ctx.beginPath();
+      ctx.moveTo(sx, sy);
+      ctx.lineTo(ex, ey);
+      ctx.stroke();
+      drawArrowHead(ctx, { x: sx, y: sy }, { x: ex, y: ey }, color);
+    }
+
     function renderBoard3d(latest) {
       latestFor3d = latest || latestFor3d;
       const canvas = $("board3d");
@@ -356,6 +406,19 @@ INDEX_HTML = """
         }
       }
 
+      const arrows = [];
+      for (const p of points) {
+        const q = bestNeighbor(p, heatmap, size);
+        if (!q) continue;
+        const delta = q.value - p.value;
+        if (delta > maxAbs * 0.035) {
+          arrows.push({ from: p, to: q, delta, depth: project3d(p, size, scale, cx, cy).depth });
+        }
+      }
+      arrows
+        .sort((a, b) => a.depth - b.depth)
+        .forEach(arrow => drawArrow3d(ctx, arrow.from, arrow.to, size, scale, cx, cy, Math.min(0.86, 0.28 + arrow.delta / maxAbs)));
+
       const sorted = points
         .map(p => ({ ...p, screen: project3d(p, size, scale, cx, cy) }))
         .sort((a, b) => a.screen.depth - b.screen.depth);
@@ -376,7 +439,7 @@ INDEX_HTML = """
       if (best) {
         ctx.fillStyle = "#e6ecef";
         ctx.font = "16px Inter, sans-serif";
-        ctx.fillText(`best first move: (${best.x}, ${best.y}, ${best.z}) value=${best.value.toFixed(3)}`, 28, 36);
+        ctx.fillText(`best move: (${best.x}, ${best.y}, ${best.z}) value=${best.value.toFixed(3)}  arrows=local greedy value gradient`, 28, 36);
         $("board3dLabel").textContent = `${latestFor3d.method || "run"} · ${latestFor3d.run_id || latestFor3d.run_dir || "loaded run"}`;
       }
 
@@ -395,6 +458,70 @@ INDEX_HTML = """
       });
     }
 
+    function drawAxes(ctx, panel, title, yLabel, yMin, yMax) {
+      ctx.fillStyle = "#151c21";
+      ctx.fillRect(panel.x, panel.y, panel.w, panel.h);
+      ctx.strokeStyle = "#31434a";
+      ctx.lineWidth = 1;
+      ctx.strokeRect(panel.x, panel.y, panel.w, panel.h);
+      ctx.fillStyle = "#dce7e9";
+      ctx.font = "15px Inter, sans-serif";
+      ctx.fillText(title, panel.x + 10, panel.y + 22);
+      ctx.fillStyle = "#97a8ae";
+      ctx.font = "12px Inter, sans-serif";
+      ctx.fillText(yLabel, panel.x + 10, panel.y + 42);
+      ctx.strokeStyle = "#26343a";
+      ctx.fillStyle = "#97a8ae";
+      for (let i = 0; i <= 4; i++) {
+        const frac = i / 4;
+        const y = panel.y + panel.h - frac * panel.h;
+        const value = yMin + frac * (yMax - yMin);
+        ctx.beginPath();
+        ctx.moveTo(panel.x, y);
+        ctx.lineTo(panel.x + panel.w, y);
+        ctx.stroke();
+        ctx.fillText(value.toFixed(2), panel.x - 42, y + 4);
+      }
+    }
+
+    function drawSeries(ctx, panel, history, key, color, yMin, yMax, minX, maxX, transform = x => x) {
+      const points = history
+        .map(d => ({ episode: d.episode, value: transform(d) }))
+        .filter(d => Number.isFinite(d.value));
+      if (points.length < 2) return;
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 2.4;
+      ctx.beginPath();
+      points.forEach((d, i) => {
+        const x = panel.x + ((d.episode - minX) / Math.max(1, maxX - minX)) * panel.w;
+        const y = panel.y + panel.h - ((d.value - yMin) / Math.max(1e-9, yMax - yMin)) * panel.h;
+        if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      });
+      ctx.stroke();
+      const last = points[points.length - 1];
+      const lx = panel.x + ((last.episode - minX) / Math.max(1, maxX - minX)) * panel.w;
+      const ly = panel.y + panel.h - ((last.value - yMin) / Math.max(1e-9, yMax - yMin)) * panel.h;
+      ctx.fillStyle = color;
+      ctx.beginPath();
+      ctx.arc(lx, ly, 4, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    function drawLegend(ctx, x, y, items) {
+      ctx.font = "13px Inter, sans-serif";
+      items.forEach((item, i) => {
+        const dx = x + i * 132;
+        ctx.strokeStyle = item.color;
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.moveTo(dx, y);
+        ctx.lineTo(dx + 22, y);
+        ctx.stroke();
+        ctx.fillStyle = "#dce7e9";
+        ctx.fillText(item.label, dx + 30, y + 4);
+      });
+    }
+
     function drawChart(history) {
       const canvas = $("chart");
       const ctx = canvas.getContext("2d");
@@ -402,31 +529,52 @@ INDEX_HTML = """
       ctx.clearRect(0, 0, w, h);
       ctx.fillStyle = "#101519";
       ctx.fillRect(0, 0, w, h);
-      ctx.strokeStyle = "#2c3a40";
-      ctx.lineWidth = 1;
-      for (let i = 1; i < 5; i++) {
-        const y = 22 + i * ((h - 44) / 5);
-        ctx.beginPath(); ctx.moveTo(36, y); ctx.lineTo(w - 16, y); ctx.stroke();
+      ctx.fillStyle = "#e6ecef";
+      ctx.font = "18px Inter, sans-serif";
+      ctx.fillText("Real-time training diagnostics", 58, 26);
+      if (!history || history.length < 2) {
+        ctx.fillStyle = "#97a8ae";
+        ctx.font = "15px Inter, sans-serif";
+        ctx.fillText("Start or load a run to plot win rates, losses, entropy, and KL.", 58, 58);
+        return;
       }
-      if (!history || history.length < 2) return;
       const xs = history.map(d => d.episode);
       const minX = Math.min(...xs), maxX = Math.max(...xs);
-      const series = [
-        ["x_win_rate", "#67d2a7"],
-        ["o_win_rate", "#f07c6b"],
-        ["draw_rate", "#7aa7ff"],
+      const panels = [
+        { x: 72, y: 48, w: w - 104, h: 132 },
+        { x: 72, y: 218, w: w - 104, h: 116 },
+        { x: 72, y: 386, w: w - 104, h: 116 },
       ];
-      for (const [key, stroke] of series) {
-        ctx.strokeStyle = stroke;
-        ctx.lineWidth = 3;
-        ctx.beginPath();
-        history.forEach((d, i) => {
-          const x = 36 + ((d.episode - minX) / Math.max(1, maxX - minX)) * (w - 56);
-          const y = h - 24 - (d.recent[key] || 0) * (h - 48);
-          if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
-        });
-        ctx.stroke();
-      }
+      const losses = history.map(d => Math.abs(Number(d.mean_abs_update || d.loss || 0))).filter(Number.isFinite);
+      const maxLoss = Math.max(0.05, ...losses);
+      const ent = history.map(d => Number(d.entropy || 0)).filter(Number.isFinite);
+      const kl = history.map(d => Number(d.approx_kl || 0)).filter(Number.isFinite);
+      const maxAux = Math.max(0.05, ...ent, ...kl);
+
+      drawAxes(ctx, panels[0], "Outcome rates", "rate", 0, 1);
+      drawSeries(ctx, panels[0], history, "x_win_rate", "#67d2a7", 0, 1, minX, maxX, d => d.recent?.x_win_rate);
+      drawSeries(ctx, panels[0], history, "o_win_rate", "#f07c6b", 0, 1, minX, maxX, d => d.recent?.o_win_rate);
+      drawSeries(ctx, panels[0], history, "draw_rate", "#7aa7ff", 0, 1, minX, maxX, d => d.recent?.draw_rate);
+      drawLegend(ctx, panels[0].x + 148, panels[0].y + 21, [
+        { label: "X win", color: "#67d2a7" },
+        { label: "O win", color: "#f07c6b" },
+        { label: "draw", color: "#7aa7ff" },
+      ]);
+
+      drawAxes(ctx, panels[1], "Optimization", "|update| / loss", 0, maxLoss);
+      drawSeries(ctx, panels[1], history, "mean_abs_update", "#f5c15d", 0, maxLoss, minX, maxX, d => Math.abs(Number(d.mean_abs_update || 0)));
+
+      drawAxes(ctx, panels[2], "Policy statistics", "entropy / KL", 0, maxAux);
+      drawSeries(ctx, panels[2], history, "entropy", "#b58cff", 0, maxAux, minX, maxX, d => Number(d.entropy || 0));
+      drawSeries(ctx, panels[2], history, "approx_kl", "#5cc8ff", 0, maxAux, minX, maxX, d => Number(d.approx_kl || 0));
+      drawLegend(ctx, panels[2].x + 148, panels[2].y + 21, [
+        { label: "entropy", color: "#b58cff" },
+        { label: "approx KL", color: "#5cc8ff" },
+      ]);
+
+      ctx.fillStyle = "#97a8ae";
+      ctx.font = "13px Inter, sans-serif";
+      ctx.fillText(`episode ${minX} to ${maxX}`, panels[2].x + panels[2].w - 132, h - 18);
     }
 
     async function refresh() {
