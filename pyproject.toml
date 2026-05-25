@@ -10,6 +10,9 @@ dependencies = [
   "rich>=13.7",
   "fastapi>=0.110",
   "uvicorn>=0.30",
+  "matplotlib>=3.8",
+  "seaborn>=0.13",
+  "pandas>=2.2",
 ]
 
 [tool.pytest.ini_options]

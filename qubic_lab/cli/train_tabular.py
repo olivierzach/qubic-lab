@@ -9,6 +9,13 @@ from qubic_lab.rl_tabular import TabularConfig, train_tabular
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Train a tabular negamax Q agent for n x n x n Qubic.")
+    parser.add_argument(
+        "--method",
+        choices=["q_learning", "sarsa", "expected_sarsa", "monte_carlo"],
+        default="q_learning",
+    )
+    parser.add_argument("--name", default=None)
+    parser.add_argument("--parent-run", default=None)
     parser.add_argument("--size", type=int, default=3)
     parser.add_argument("--episodes", type=int, default=10_000)
     parser.add_argument("--alpha", type=float, default=0.25)
@@ -25,6 +32,9 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     cfg = TabularConfig(
+        method=args.method,
+        name=args.name,
+        parent_run=args.parent_run,
         size=args.size,
         episodes=args.episodes,
         alpha=args.alpha,
@@ -41,8 +51,9 @@ def main() -> None:
     def on_snapshot(payload: dict) -> None:
         recent = payload["recent"]
         console.print(
-            f"ep={payload['episode']}/{payload['episodes']} "
+            f"{payload['method']} ep={payload['episode']}/{payload['episodes']} "
             f"eps={payload['epsilon']:.3f} states={payload['states']} "
+            f"upd={payload.get('mean_abs_update', 0.0):.4f} "
             f"X={recent['x_win_rate']:.2f} O={recent['o_win_rate']:.2f} "
             f"D={recent['draw_rate']:.2f}"
         )

@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 
 from qubic_lab.rl_tabular import TabularConfig, train_tabular
 
@@ -17,6 +17,16 @@ _thread: threading.Thread | None = None
 _stop_event: threading.Event | None = None
 _latest: dict[str, Any] | None = None
 _history: list[dict[str, Any]] = []
+
+
+def _safe_run_dir(run_dir: str) -> Path:
+    root = Path("runs").resolve()
+    candidate = Path(run_dir).resolve()
+    if root not in candidate.parents and candidate != root:
+        raise HTTPException(status_code=400, detail="run_dir must be under runs/")
+    if not candidate.exists():
+        raise HTTPException(status_code=404, detail="run not found")
+    return candidate
 
 
 INDEX_HTML = """
@@ -60,7 +70,7 @@ INDEX_HTML = """
     aside { padding: 14px; }
     .controls { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
     label { display: grid; gap: 6px; color: var(--muted); font-size: 13px; }
-    input {
+    input, select {
       width: 100%;
       min-height: 36px;
       border: 1px solid #3a4a51;
@@ -71,6 +81,7 @@ INDEX_HTML = """
       font: inherit;
     }
     .actions { display: flex; gap: 10px; margin-top: 14px; }
+    .run-picker { display: grid; gap: 8px; margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--line); }
     button {
       min-height: 38px;
       border: 1px solid #4e656e;
@@ -90,6 +101,10 @@ INDEX_HTML = """
     .metric strong { display: block; margin-top: 3px; font-size: 24px; line-height: 1; }
     .viz { padding: 14px; display: grid; gap: 18px; }
     canvas { width: 100%; height: 220px; background: #101519; border: 1px solid var(--line); border-radius: 8px; }
+    .artifacts { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 14px; }
+    .artifact { border: 1px solid var(--line); border-radius: 8px; overflow: hidden; background: #101519; }
+    .artifact img { display: block; width: 100%; height: auto; }
+    .artifact a { display: block; padding: 9px 11px; color: var(--text); text-decoration: none; border-top: 1px solid var(--line); }
     .layers { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 14px; }
     .layer { display: grid; gap: 8px; }
     .layer-title { color: var(--muted); font-size: 13px; }
@@ -123,6 +138,12 @@ INDEX_HTML = """
   <main class="shell">
     <aside>
       <div class="controls">
+        <label>Method <select id="method">
+          <option value="q_learning">Q-learning</option>
+          <option value="sarsa">SARSA</option>
+          <option value="expected_sarsa">Expected SARSA</option>
+          <option value="monte_carlo">Monte Carlo</option>
+        </select></label>
         <label>Size <input id="size" type="number" min="2" max="4" value="3"></label>
         <label>Episodes <input id="episodes" type="number" min="1" value="20000"></label>
         <label>Alpha <input id="alpha" type="number" min="0" max="1" step="0.01" value="0.25"></label>
@@ -134,6 +155,10 @@ INDEX_HTML = """
       <div class="actions">
         <button class="primary" id="startBtn">Start</button>
         <button id="stopBtn">Stop</button>
+      </div>
+      <div class="run-picker">
+        <label>Saved run <select id="runSelect"></select></label>
+        <button id="loadRunBtn">Load</button>
       </div>
       <div class="status">
         <div class="subtle">States: <strong id="states">0</strong></div>
@@ -149,6 +174,7 @@ INDEX_HTML = """
       </div>
       <div class="viz">
         <canvas id="chart" width="900" height="260"></canvas>
+        <div class="artifacts" id="artifacts"></div>
         <div class="layers" id="layers"></div>
       </div>
     </section>
@@ -190,6 +216,30 @@ INDEX_HTML = """
           grid.appendChild(cell);
         }));
         wrap.append(title, grid);
+        root.appendChild(wrap);
+      });
+    }
+
+    function renderArtifacts(latest) {
+      const root = $("artifacts");
+      root.innerHTML = "";
+      if (!latest || !latest.run_dir) return;
+      const run = encodeURIComponent(latest.run_dir);
+      const artifacts = [
+        ["curves.png", "Training curves"],
+        ["first_move_heatmap.png", "First-move heatmap"],
+      ];
+      artifacts.forEach(([file, label]) => {
+        const wrap = document.createElement("div");
+        wrap.className = "artifact";
+        const img = document.createElement("img");
+        img.src = `/api/artifact?run_dir=${run}&file=${encodeURIComponent(file)}&t=${Date.now()}`;
+        img.alt = label;
+        const link = document.createElement("a");
+        link.href = img.src;
+        link.textContent = label;
+        link.target = "_blank";
+        wrap.append(img, link);
         root.appendChild(wrap);
       });
     }
@@ -237,19 +287,36 @@ INDEX_HTML = """
       $("stopBtn").disabled = !state.running;
       if (!latest) return;
       $("runDir").textContent = latest.run_dir || "run";
-      $("episode").textContent = `${latest.episode}/${latest.episodes}`;
+      $("episode").textContent = `${latest.method} ${latest.episode}/${latest.episodes}`;
       $("states").textContent = latest.states;
       $("eps").textContent = latest.epsilon;
       $("xwin").textContent = pct(latest.recent.x_win_rate);
       $("owin").textContent = pct(latest.recent.o_win_rate);
       $("draw").textContent = pct(latest.recent.draw_rate);
       renderHeatmap(latest.heatmap);
+      renderArtifacts(latest);
       drawChart(state.history || []);
+    }
+
+    async function refreshRuns() {
+      const res = await fetch("/api/runs");
+      const data = await res.json();
+      const select = $("runSelect");
+      const current = select.value;
+      select.innerHTML = "";
+      (data.runs || []).forEach((run) => {
+        const option = document.createElement("option");
+        option.value = run.run_dir;
+        option.textContent = `${run.method || "run"} · ${run.run_id || run.run_dir} · ${run.episode || 0} ep`;
+        select.appendChild(option);
+      });
+      if (current) select.value = current;
     }
 
     $("startBtn").addEventListener("click", async () => {
       const payload = {};
       fields.forEach((field) => payload[field] = Number($(field).value));
+      payload.method = $("method").value;
       await fetch("/api/start", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -263,8 +330,27 @@ INDEX_HTML = """
       refresh();
     });
 
+    $("loadRunBtn").addEventListener("click", async () => {
+      const runDir = $("runSelect").value;
+      if (!runDir) return;
+      const res = await fetch(`/api/run?run_dir=${encodeURIComponent(runDir)}`);
+      const data = await res.json();
+      $("runDir").textContent = data.latest.run_dir || "run";
+      $("episode").textContent = `${data.latest.method} ${data.latest.episode}/${data.latest.episodes}`;
+      $("states").textContent = data.latest.states;
+      $("eps").textContent = data.latest.epsilon;
+      $("xwin").textContent = pct(data.latest.recent.x_win_rate);
+      $("owin").textContent = pct(data.latest.recent.o_win_rate);
+      $("draw").textContent = pct(data.latest.recent.draw_rate);
+      renderHeatmap(data.latest.heatmap);
+      renderArtifacts(data.latest);
+      drawChart(data.history || []);
+    });
+
     refresh();
+    refreshRuns();
     setInterval(refresh, 1000);
+    setInterval(refreshRuns, 5000);
   </script>
 </body>
 </html>
@@ -320,6 +406,7 @@ async def start(request: Request) -> JSONResponse:
             raise HTTPException(status_code=409, detail="run already active")
 
         cfg = TabularConfig(
+            method=str(payload.get("method", "q_learning")),
             size=int(payload.get("size", 3)),
             episodes=int(payload.get("episodes", 10_000)),
             alpha=float(payload.get("alpha", 0.25)),
@@ -347,9 +434,48 @@ def stop() -> JSONResponse:
 @app.get("/api/runs")
 def runs() -> JSONResponse:
     items = []
-    for latest_path in sorted(Path("runs").glob("*/latest.json"), reverse=True):
+    for latest_path in Path("runs").rglob("latest.json"):
         try:
-            items.append(json.loads(latest_path.read_text()))
+            latest = json.loads(latest_path.read_text())
+            metadata_path = latest_path.parent / "metadata.json"
+            if metadata_path.exists():
+                latest["metadata"] = json.loads(metadata_path.read_text())
+                latest["created_at"] = latest["metadata"].get("created_at")
+            items.append(latest)
         except json.JSONDecodeError:
             continue
+    items.sort(key=lambda item: item.get("created_at") or item.get("run_dir", ""), reverse=True)
     return JSONResponse({"runs": items})
+
+
+@app.get("/api/run")
+def run(run_dir: str) -> JSONResponse:
+    path = _safe_run_dir(run_dir)
+    latest_path = path / "latest.json"
+    if not latest_path.exists():
+        raise HTTPException(status_code=404, detail="latest.json not found")
+    latest = json.loads(latest_path.read_text())
+    history = []
+    metrics_path = path / "metrics.jsonl"
+    if metrics_path.exists():
+        history = [json.loads(line) for line in metrics_path.read_text().splitlines() if line.strip()]
+    return JSONResponse({"latest": latest, "history": history[-300:]})
+
+
+@app.get("/api/artifact")
+def artifact(run_dir: str, file: str) -> FileResponse:
+    path = _safe_run_dir(run_dir)
+    allowed = {
+        "curves.png",
+        "first_move_heatmap.png",
+        "curves.svg",
+        "analysis.md",
+        "analysis.json",
+        "first_move_policy.json",
+    }
+    if file not in allowed:
+        raise HTTPException(status_code=400, detail="artifact not allowed")
+    artifact_path = path / file
+    if not artifact_path.exists():
+        raise HTTPException(status_code=404, detail="artifact not found")
+    return FileResponse(artifact_path)
