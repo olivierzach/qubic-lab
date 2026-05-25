@@ -102,6 +102,9 @@ INDEX_HTML = """
     .metric strong { display: block; margin-top: 3px; font-size: 24px; line-height: 1; }
     .viz { padding: 14px; display: grid; gap: 18px; }
     canvas { width: 100%; height: 220px; background: #101519; border: 1px solid var(--line); border-radius: 8px; }
+    #board3d { height: 460px; }
+    .board3d-tools { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+    .board3d-tools .subtle { min-width: 180px; }
     .artifacts { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 14px; }
     .artifact { border: 1px solid var(--line); border-radius: 8px; overflow: hidden; background: #101519; }
     .artifact img { display: block; width: 100%; height: auto; }
@@ -177,6 +180,11 @@ INDEX_HTML = """
         <div class="metric"><span>Draw</span><strong id="draw">0%</strong></div>
       </div>
       <div class="viz">
+        <div class="board3d-tools">
+          <div class="subtle" id="board3dLabel">3D value lattice</div>
+          <button id="resetViewBtn">Reset view</button>
+        </div>
+        <canvas id="board3d" width="1000" height="560"></canvas>
         <canvas id="chart" width="900" height="260"></canvas>
         <div class="artifacts" id="artifacts"></div>
         <div class="layers" id="layers"></div>
@@ -186,6 +194,11 @@ INDEX_HTML = """
   <script>
     const $ = (id) => document.getElementById(id);
     const fields = ["size", "episodes", "alpha", "gamma", "epsilon", "seed", "log_every", "batch_episodes"];
+    let latestFor3d = null;
+    let boardYaw = -0.72;
+    let boardPitch = 0.72;
+    let dragging3d = false;
+    let lastPointer = null;
 
     function pct(x) { return `${Math.round((x || 0) * 100)}%`; }
     function color(v) {
@@ -248,6 +261,140 @@ INDEX_HTML = """
       });
     }
 
+    function flattenHeatmap(heatmap) {
+      const points = [];
+      if (!heatmap || !heatmap.length) return points;
+      heatmap.forEach((layer, z) => {
+        layer.forEach((row, y) => {
+          row.forEach((value, x) => points.push({ x, y, z, value: Number(value) || 0 }));
+        });
+      });
+      return points;
+    }
+
+    function project3d(point, size, scale, cx, cy) {
+      const ox = point.x - (size - 1) / 2;
+      const oy = point.y - (size - 1) / 2;
+      const oz = point.z - (size - 1) / 2;
+      const cyaw = Math.cos(boardYaw), syaw = Math.sin(boardYaw);
+      const cp = Math.cos(boardPitch), sp = Math.sin(boardPitch);
+      const x1 = ox * cyaw - oz * syaw;
+      const z1 = ox * syaw + oz * cyaw;
+      const y1 = oy * cp - z1 * sp;
+      const z2 = oy * sp + z1 * cp;
+      return {
+        x: cx + x1 * scale,
+        y: cy + y1 * scale,
+        depth: z2,
+      };
+    }
+
+    function valueColor(value, alpha = 1) {
+      const t = Math.max(-1, Math.min(1, value));
+      if (t >= 0) {
+        const r = Math.round(92 + 40 * (1 - t));
+        const g = Math.round(166 + 60 * t);
+        const b = Math.round(138 + 20 * (1 - t));
+        return `rgba(${r},${g},${b},${alpha})`;
+      }
+      const u = -t;
+      const r = Math.round(245 - 20 * (1 - u));
+      const g = Math.round(135 - 40 * u);
+      const b = Math.round(105 - 30 * u);
+      return `rgba(${r},${g},${b},${alpha})`;
+    }
+
+    function drawLine3d(ctx, a, b, size, scale, cx, cy, stroke, alpha = 1) {
+      const pa = project3d(a, size, scale, cx, cy);
+      const pb = project3d(b, size, scale, cx, cy);
+      ctx.strokeStyle = stroke.replace("ALPHA", alpha);
+      ctx.beginPath();
+      ctx.moveTo(pa.x, pa.y);
+      ctx.lineTo(pb.x, pb.y);
+      ctx.stroke();
+    }
+
+    function renderBoard3d(latest) {
+      latestFor3d = latest || latestFor3d;
+      const canvas = $("board3d");
+      const ctx = canvas.getContext("2d");
+      const w = canvas.width;
+      const h = canvas.height;
+      ctx.clearRect(0, 0, w, h);
+      const grad = ctx.createLinearGradient(0, 0, 0, h);
+      grad.addColorStop(0, "#101519");
+      grad.addColorStop(1, "#151c21");
+      ctx.fillStyle = grad;
+      ctx.fillRect(0, 0, w, h);
+      if (!latestFor3d || !latestFor3d.heatmap || !latestFor3d.heatmap.length) {
+        ctx.fillStyle = "#97a8ae";
+        ctx.font = "18px Inter, sans-serif";
+        ctx.fillText("Load or start a run to render the 3D value lattice.", 36, 48);
+        return;
+      }
+
+      const heatmap = latestFor3d.heatmap;
+      const size = heatmap.length;
+      const points = flattenHeatmap(heatmap);
+      const maxAbs = Math.max(0.001, ...points.map(p => Math.abs(p.value)));
+      const scale = Math.min(w, h) / (size <= 3 ? 4.5 : 5.5);
+      const cx = w * 0.52;
+      const cy = h * 0.55;
+
+      ctx.lineWidth = 1.25;
+      for (let y = 0; y < size; y++) {
+        for (let z = 0; z < size; z++) {
+          drawLine3d(ctx, { x: 0, y, z }, { x: size - 1, y, z }, size, scale, cx, cy, "rgba(111,139,148,ALPHA)", 0.28);
+        }
+        for (let x = 0; x < size; x++) {
+          drawLine3d(ctx, { x, y, z: 0 }, { x, y, z: size - 1 }, size, scale, cx, cy, "rgba(111,139,148,ALPHA)", 0.28);
+        }
+      }
+      for (let x = 0; x < size; x++) {
+        for (let z = 0; z < size; z++) {
+          drawLine3d(ctx, { x, y: 0, z }, { x, y: size - 1, z }, size, scale, cx, cy, "rgba(111,139,148,ALPHA)", 0.18);
+        }
+      }
+
+      const sorted = points
+        .map(p => ({ ...p, screen: project3d(p, size, scale, cx, cy) }))
+        .sort((a, b) => a.screen.depth - b.screen.depth);
+      const best = sorted.reduce((acc, p) => p.value > acc.value ? p : acc, sorted[0]);
+
+      for (const p of sorted) {
+        const norm = p.value / maxAbs;
+        const radius = 10 + 22 * Math.abs(norm);
+        ctx.beginPath();
+        ctx.arc(p.screen.x, p.screen.y, radius, 0, Math.PI * 2);
+        ctx.fillStyle = valueColor(norm, 0.86);
+        ctx.fill();
+        ctx.lineWidth = p === best ? 4 : 1.4;
+        ctx.strokeStyle = p === best ? "#f5c15d" : "rgba(230,236,239,.45)";
+        ctx.stroke();
+      }
+
+      if (best) {
+        ctx.fillStyle = "#e6ecef";
+        ctx.font = "16px Inter, sans-serif";
+        ctx.fillText(`best first move: (${best.x}, ${best.y}, ${best.z}) value=${best.value.toFixed(3)}`, 28, 36);
+        $("board3dLabel").textContent = `${latestFor3d.method || "run"} · ${latestFor3d.run_id || latestFor3d.run_dir || "loaded run"}`;
+      }
+
+      const axis = [
+        ["x", { x: 0, y: size - 1, z: size - 1 }, { x: size - 1, y: size - 1, z: size - 1 }, "#67d2a7"],
+        ["y", { x: 0, y: 0, z: size - 1 }, { x: 0, y: size - 1, z: size - 1 }, "#f5c15d"],
+        ["z", { x: 0, y: size - 1, z: 0 }, { x: 0, y: size - 1, z: size - 1 }, "#7aa7ff"],
+      ];
+      ctx.lineWidth = 3;
+      axis.forEach(([label, a, b, stroke]) => {
+        const pb = project3d(b, size, scale, cx, cy);
+        drawLine3d(ctx, a, b, size, scale, cx, cy, stroke.replace(")", ",ALPHA)").replace("rgb", "rgba"), 1);
+        ctx.fillStyle = stroke;
+        ctx.font = "18px Inter, sans-serif";
+        ctx.fillText(label, pb.x + 8, pb.y - 8);
+      });
+    }
+
     function drawChart(history) {
       const canvas = $("chart");
       const ctx = canvas.getContext("2d");
@@ -299,6 +446,7 @@ INDEX_HTML = """
       $("draw").textContent = pct(latest.recent.draw_rate);
       renderHeatmap(latest.heatmap);
       renderArtifacts(latest);
+      renderBoard3d(latest);
       drawChart(state.history || []);
     }
 
@@ -348,7 +496,33 @@ INDEX_HTML = """
       $("draw").textContent = pct(data.latest.recent.draw_rate);
       renderHeatmap(data.latest.heatmap);
       renderArtifacts(data.latest);
+      renderBoard3d(data.latest);
       drawChart(data.history || []);
+    });
+
+    $("resetViewBtn").addEventListener("click", () => {
+      boardYaw = -0.72;
+      boardPitch = 0.72;
+      renderBoard3d(latestFor3d);
+    });
+
+    $("board3d").addEventListener("pointerdown", (event) => {
+      dragging3d = true;
+      lastPointer = { x: event.clientX, y: event.clientY };
+      $("board3d").setPointerCapture(event.pointerId);
+    });
+    $("board3d").addEventListener("pointermove", (event) => {
+      if (!dragging3d || !lastPointer) return;
+      const dx = event.clientX - lastPointer.x;
+      const dy = event.clientY - lastPointer.y;
+      boardYaw += dx * 0.01;
+      boardPitch = Math.max(0.15, Math.min(1.35, boardPitch + dy * 0.01));
+      lastPointer = { x: event.clientX, y: event.clientY };
+      renderBoard3d(latestFor3d);
+    });
+    $("board3d").addEventListener("pointerup", () => {
+      dragging3d = false;
+      lastPointer = null;
     });
 
     refresh();
