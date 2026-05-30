@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import threading
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
@@ -28,6 +29,93 @@ _stop_event: threading.Event | None = None
 _latest: dict[str, Any] | None = None
 _history: list[dict[str, Any]] = []
 
+RUN_DEFAULTS: dict[str, dict[str, Any]] = {
+    "ppo": {
+        "method": "ppo",
+        "size": 3,
+        "episodes": 5_000,
+        "batch_episodes": 64,
+        "update_epochs": 4,
+        "hidden": 128,
+        "lr": 3e-4,
+        "gamma": 0.99,
+        "clip_eps": 0.2,
+        "entropy_coef": 0.02,
+        "value_coef": 0.5,
+        "max_grad_norm": 1.0,
+        "temperature": 1.0,
+        "seed": 0,
+        "log_every": 100,
+        "device": "cpu",
+    },
+    "grpo": {
+        "method": "grpo",
+        "size": 3,
+        "episodes": 5_000,
+        "batch_episodes": 64,
+        "update_epochs": 4,
+        "hidden": 128,
+        "lr": 3e-4,
+        "gamma": 0.99,
+        "clip_eps": 0.2,
+        "entropy_coef": 0.02,
+        "value_coef": 0.5,
+        "max_grad_norm": 1.0,
+        "temperature": 1.0,
+        "seed": 0,
+        "log_every": 100,
+        "device": "cpu",
+    },
+    "q_learning": {
+        "method": "q_learning",
+        "size": 3,
+        "episodes": 10_000,
+        "alpha": 0.25,
+        "gamma": 0.98,
+        "epsilon": 0.35,
+        "epsilon_min": 0.03,
+        "epsilon_decay": 0.9995,
+        "seed": 0,
+        "log_every": 100,
+    },
+    "sarsa": {
+        "method": "sarsa",
+        "size": 3,
+        "episodes": 10_000,
+        "alpha": 0.25,
+        "gamma": 0.98,
+        "epsilon": 0.35,
+        "epsilon_min": 0.03,
+        "epsilon_decay": 0.9995,
+        "seed": 0,
+        "log_every": 100,
+    },
+    "expected_sarsa": {
+        "method": "expected_sarsa",
+        "size": 3,
+        "episodes": 10_000,
+        "alpha": 0.25,
+        "gamma": 0.98,
+        "epsilon": 0.35,
+        "epsilon_min": 0.03,
+        "epsilon_decay": 0.9995,
+        "seed": 0,
+        "log_every": 100,
+    },
+    "monte_carlo": {
+        "method": "monte_carlo",
+        "size": 3,
+        "episodes": 10_000,
+        "alpha": 0.25,
+        "gamma": 0.98,
+        "epsilon": 0.35,
+        "epsilon_min": 0.03,
+        "epsilon_decay": 0.9995,
+        "seed": 0,
+        "log_every": 100,
+    },
+}
+
 
 def _safe_run_dir(run_dir: str) -> Path:
     root = Path("runs").resolve()
@@ -45,6 +133,107 @@ def _empty_layers(size: int) -> list[list[list[int]]]:
 
 def _trim_history() -> None:
     del _history[:-300]
+
+
+def _int_payload(payload: dict[str, Any], key: str, default: int, *, minimum: int, maximum: int) -> int:
+    value = int(payload.get(key, default))
+    if value < minimum or value > maximum:
+        raise HTTPException(status_code=400, detail=f"{key} must be between {minimum} and {maximum}")
+    return value
+
+
+def _float_payload(
+    payload: dict[str, Any],
+    key: str,
+    default: float,
+    *,
+    minimum: float,
+    maximum: float,
+) -> float:
+    value = float(payload.get(key, default))
+    if value < minimum or value > maximum:
+        raise HTTPException(status_code=400, detail=f"{key} must be between {minimum:g} and {maximum:g}")
+    return value
+
+
+def _run_payload(payload: dict[str, Any]) -> TabularConfig | DeepRLConfig:
+    method = str(payload.get("method", "q_learning")).strip().lower().replace("-", "_")
+    if method not in RUN_DEFAULTS:
+        raise HTTPException(status_code=400, detail=f"unknown method {method!r}")
+    defaults = RUN_DEFAULTS[method]
+    max_size = 5 if method in {"ppo", "grpo"} else 4
+    common = {
+        "method": method,
+        "name": payload.get("name") or None,
+        "parent_run": payload.get("parent_run") or None,
+        "size": _int_payload(payload, "size", int(defaults["size"]), minimum=2, maximum=max_size),
+        "episodes": _int_payload(
+            payload,
+            "episodes",
+            int(defaults["episodes"]),
+            minimum=1,
+            maximum=2_000_000,
+        ),
+        "seed": _int_payload(payload, "seed", int(defaults["seed"]), minimum=0, maximum=2**31 - 1),
+        "log_every": _int_payload(payload, "log_every", int(defaults["log_every"]), minimum=1, maximum=100_000),
+    }
+    if method in {"ppo", "grpo"}:
+        return DeepRLConfig(
+            **common,
+            batch_episodes=_int_payload(payload, "batch_episodes", int(defaults["batch_episodes"]), minimum=1, maximum=4096),
+            update_epochs=_int_payload(payload, "update_epochs", int(defaults["update_epochs"]), minimum=1, maximum=128),
+            hidden=_int_payload(payload, "hidden", int(defaults["hidden"]), minimum=8, maximum=4096),
+            lr=_float_payload(payload, "lr", float(defaults["lr"]), minimum=1e-7, maximum=1.0),
+            gamma=_float_payload(payload, "gamma", float(defaults["gamma"]), minimum=0.0, maximum=1.0),
+            clip_eps=_float_payload(payload, "clip_eps", float(defaults["clip_eps"]), minimum=0.01, maximum=1.0),
+            entropy_coef=_float_payload(payload, "entropy_coef", float(defaults["entropy_coef"]), minimum=0.0, maximum=1.0),
+            value_coef=_float_payload(payload, "value_coef", float(defaults["value_coef"]), minimum=0.0, maximum=10.0),
+            max_grad_norm=_float_payload(payload, "max_grad_norm", float(defaults["max_grad_norm"]), minimum=0.01, maximum=100.0),
+            temperature=_float_payload(payload, "temperature", float(defaults["temperature"]), minimum=0.01, maximum=10.0),
+            device=str(payload.get("device", defaults["device"])),
+        )
+    return TabularConfig(
+        **common,
+        alpha=_float_payload(payload, "alpha", float(defaults["alpha"]), minimum=0.0, maximum=1.0),
+        gamma=_float_payload(payload, "gamma", float(defaults["gamma"]), minimum=0.0, maximum=1.0),
+        epsilon=_float_payload(payload, "epsilon", float(defaults["epsilon"]), minimum=0.0, maximum=1.0),
+        epsilon_min=_float_payload(payload, "epsilon_min", float(defaults["epsilon_min"]), minimum=0.0, maximum=1.0),
+        epsilon_decay=_float_payload(payload, "epsilon_decay", float(defaults["epsilon_decay"]), minimum=0.0, maximum=1.0),
+    )
+
+
+def _read_jsonl(path: Path) -> list[dict[str, Any]]:
+    if not path.exists():
+        return []
+    return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+
+
+def _timeline_for_run(path: Path) -> dict[str, Any]:
+    latest_path = path / "latest.json"
+    latest = json.loads(latest_path.read_text()) if latest_path.exists() else None
+    metrics = _read_jsonl(path / "metrics.jsonl")
+    snapshots = []
+    for item in metrics[-500:]:
+        snapshots.append(
+            {
+                "episode": item.get("episode"),
+                "method": item.get("method"),
+                "heatmap": item.get("heatmap"),
+                "recent": item.get("recent"),
+                "value": item.get("value"),
+                "policy_loss": item.get("policy_loss"),
+                "value_loss": item.get("value_loss"),
+                "entropy": item.get("entropy"),
+                "approx_kl": item.get("approx_kl"),
+                "mean_abs_update": item.get("mean_abs_update"),
+            }
+        )
+    return {
+        "run_dir": str(path),
+        "latest": latest,
+        "snapshots": snapshots,
+        "config": latest.get("config", {}) if latest else {},
+    }
 
 
 def _on_snapshot(payload: dict[str, Any]) -> None:
@@ -82,6 +271,7 @@ def state() -> JSONResponse:
 
 
 @app.post("/api/start")
+@app.post("/api/run")
 async def start(request: Request) -> JSONResponse:
     payload = await request.json()
     with _lock:
@@ -89,34 +279,27 @@ async def start(request: Request) -> JSONResponse:
         if _thread is not None and _thread.is_alive():
             raise HTTPException(status_code=409, detail="run already active")
 
-        method = str(payload.get("method", "q_learning"))
-        if method in {"ppo", "grpo"}:
-            cfg = DeepRLConfig(
-                method=method,
-                size=int(payload.get("size", 3)),
-                episodes=int(payload.get("episodes", 2_000)),
-                batch_episodes=int(payload.get("batch_episodes", 32)),
-                gamma=float(payload.get("gamma", 0.99)),
-                seed=int(payload.get("seed", 0)),
-                log_every=int(payload.get("log_every", 100)),
-            )
-        else:
-            cfg = TabularConfig(
-                method=method,
-                size=int(payload.get("size", 3)),
-                episodes=int(payload.get("episodes", 10_000)),
-                alpha=float(payload.get("alpha", 0.25)),
-                gamma=float(payload.get("gamma", 0.98)),
-                epsilon=float(payload.get("epsilon", 0.35)),
-                seed=int(payload.get("seed", 0)),
-                log_every=int(payload.get("log_every", 100)),
-            )
+        cfg = _run_payload(payload)
         _latest = None
         _history = []
         _stop_event = threading.Event()
         _thread = threading.Thread(target=_worker, args=(cfg, _stop_event), daemon=True)
         _thread.start()
-    return JSONResponse({"ok": True})
+    return JSONResponse({"ok": True, "config": asdict(cfg)})
+
+
+@app.get("/api/run/defaults")
+def run_defaults() -> JSONResponse:
+    return JSONResponse(
+        {
+            "methods": list(RUN_DEFAULTS),
+            "defaults": RUN_DEFAULTS,
+            "groups": {
+                "tabular": ["q_learning", "sarsa", "expected_sarsa", "monte_carlo"],
+                "policy_gradient": ["ppo", "grpo"],
+            },
+        }
+    )
 
 
 @app.post("/api/stop")
@@ -151,11 +334,17 @@ def run(run_dir: str) -> JSONResponse:
     if not latest_path.exists():
         raise HTTPException(status_code=404, detail="latest.json not found")
     latest = json.loads(latest_path.read_text())
-    history = []
-    metrics_path = path / "metrics.jsonl"
-    if metrics_path.exists():
-        history = [json.loads(line) for line in metrics_path.read_text().splitlines() if line.strip()]
+    history = _read_jsonl(path / "metrics.jsonl")
     return JSONResponse({"latest": latest, "history": history[-500:]})
+
+
+@app.get("/api/model/timeline")
+def model_timeline(model_id: str | None = None, run_dir: str | None = None) -> JSONResponse:
+    target = run_dir or model_id
+    if not target or target == "random":
+        return JSONResponse({"run_dir": None, "latest": None, "snapshots": [], "config": {}})
+    path = _safe_run_dir(target)
+    return JSONResponse(_timeline_for_run(path))
 
 
 @app.get("/api/artifact")

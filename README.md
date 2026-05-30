@@ -105,19 +105,38 @@ cd ..
 uvicorn qubic_lab.web:app --reload --port 8011
 ```
 
-Open `http://127.0.0.1:8011`, choose a method, board size, and training budget, and start
-a run. The dashboard can also load saved offline runs under `runs/`, showing rolling
-X/O/draw rates, generated artifacts, and the learned empty-board value heatmap for each
-`z` layer. The main viewer renders the `n x n x n` Qubic board as a rotatable 3D value
-lattice with local greedy direction arrows, plus real-time multi-panel training plots
-for outcome rates, optimization loss/update magnitude, entropy, and KL.
+Open `http://127.0.0.1:8011/lab`, choose a method, board size, and training budget, and
+start a run. The lab can also load saved offline runs under `runs/`, showing rolling
+X/O/draw rates, generated artifacts, and the learned empty-board policy/value heatmap for
+each `z` layer. The live run state keeps the latest snapshot plus a bounded timeline of
+recent metrics so the frontend can render progress charts and heatmap-oriented inspection
+without reading run files directly.
 
-The React UI is split into two focused apps:
+The React UI direction is split into two focused apps:
 
-- `/runs`: browse saved runs, inspect plots/artifacts, start short PPO/GRPO runs,
-  run tournaments, and generate self-play dataset artifacts.
+- `/lab`: configure short tabular, PPO, or GRPO runs; browse saved runs; inspect
+  `latest.json`, recent `metrics.jsonl` history, plots, model artifacts, tournaments, and
+  generated self-play dataset artifacts.
 - `/play`: play against a selected model on the 3D board with value overlays,
   top-move arrows, and explicit coordinate buttons for every legal move.
+
+The backend API surface used by those apps is intentionally small:
+
+- `GET /api/run/defaults` returns method groups and validated default parameters for
+  configurable tabular, PPO, and GRPO runs.
+- `POST /api/start` starts a configurable run from JSON parameters such as `method`,
+  `size`, `episodes`, `seed`, `log_every`, and method-specific learning settings.
+- `GET /api/state` returns whether a run is active, the latest training snapshot, and the
+  recent timeline history.
+- `GET /api/runs` and `GET /api/run?run_dir=runs/...` list saved runs and inspect one
+  run's latest snapshot plus recent metric history.
+- `GET /api/model/timeline?run_dir=runs/...` returns a compact model/run timeline for
+  heatmap and metric inspection.
+- `GET /api/models`, `POST /api/analyze/position`, `POST /api/play/new`, and
+  `POST /api/play/move` support model selection, position analysis, heatmap data, and
+  interactive play.
+- `POST /api/eval/tournament` and `POST /api/selfplay/generate` produce evaluation and
+  dataset artifacts for later inspection.
 
 Generate offline self-play data directly:
 
@@ -126,8 +145,10 @@ python -m qubic_lab.cli.generate_selfplay --model-id random --size 3 --games 100
 ```
 
 Datasets are written under `runs/datasets/<timestamp>/` with `manifest.json` and
-`dataset.jsonl`. Current PPO/GRPO runs still train from online self-play rollouts;
-the dataset artifact is the foundation for the next offline imitation/RL stage.
+`dataset.jsonl`. Each row stores the pre-move board, acting player, legal moves, chosen
+action, model probability/value, final winner, and return from the acting player's
+perspective. Current PPO/GRPO runs still train from online self-play rollouts; the dataset
+artifact is the foundation for the next offline imitation/RL stage.
 
 ## Milestones
 

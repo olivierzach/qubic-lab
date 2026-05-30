@@ -11,6 +11,34 @@ const api = async (path, options = {}) => {
   return response.json();
 };
 
+const apiMaybe = async (path, fallback = null, options = {}) => {
+  try {
+    return await api(path, options);
+  } catch {
+    return fallback;
+  }
+};
+
+const defaults = {
+  method: 'ppo',
+  size: 3,
+  episodes: 5000,
+  batch_episodes: 64,
+  update_epochs: 4,
+  hidden: 128,
+  log_every: 100,
+  lr: 0.0003,
+  gamma: 0.99,
+  clip_eps: 0.2,
+  entropy_coef: 0.02,
+  value_coef: 0.5,
+  alpha: 0.25,
+  epsilon: 0.35,
+  epsilon_min: 0.03,
+  epsilon_decay: 0.9995,
+  seed: 0,
+};
+
 const emptyBoard = (size) =>
   Array.from({ length: size }, () =>
     Array.from({ length: size }, () => Array.from({ length: size }, () => 0)),
@@ -23,16 +51,20 @@ const moveCoord = (move, size) => ({
   x: move % size,
 });
 
+const pct = (value) => `${Math.round((Number(value) || 0) * 100)}%`;
+const fixed = (value, places = 3) => Number(value || 0).toFixed(places);
+const methodLabel = (method) => String(method || 'run').toUpperCase();
+
 function Header({ active }) {
   return (
     <header className="topbar">
-      <div>
-        <h1>Qubic Lab</h1>
-        <p>{active === 'play' ? 'Play and inspect selected agents.' : 'Review runs, datasets, artifacts, and evaluations.'}</p>
-      </div>
-      <nav>
-        <a className={active === 'runs' ? 'active' : ''} href="/runs">Run viewer</a>
-        <a className={active === 'play' ? 'active' : ''} href="/play">Play app</a>
+      <a className="brand" href="/lab">
+        <span>Qubic Lab</span>
+        <small>{active === 'play' ? 'standalone play' : 'research notebook'}</small>
+      </a>
+      <nav aria-label="Primary">
+        <a className={active === 'lab' ? 'active' : ''} href="/lab">Lab</a>
+        <a className={active === 'play' ? 'active' : ''} href="/play">Play</a>
       </nav>
     </header>
   );
@@ -41,72 +73,122 @@ function Header({ active }) {
 function Home() {
   return (
     <>
-      <Header active="home" />
-      <main className="home">
-        <a href="/runs">
-          <strong>Run viewer</strong>
-          <span>Start training, inspect artifacts, compare models, and generate self-play datasets.</span>
+      <Header active="lab" />
+      <main className="home paper-width">
+        <a href="/lab">
+          <strong>Research lab</strong>
+          <span>Configure training runs, inspect live diagnostics, compare saved agents, and browse heatmap snapshots.</span>
         </a>
         <a href="/play">
           <strong>Play app</strong>
-          <span>Play against a chosen model with a 3D board, heatmap, and explicit legal move controls.</span>
+          <span>Choose a model and side, start a clean game, use legal coordinate moves, and review history.</span>
         </a>
       </main>
     </>
   );
 }
 
-function RunViewerApp() {
+function LabApp() {
   const [runs, setRuns] = useState([]);
   const [models, setModels] = useState([]);
   const [selectedRun, setSelectedRun] = useState('');
   const [selectedModel, setSelectedModel] = useState('random');
   const [runData, setRunData] = useState({ latest: null, history: [] });
   const [liveState, setLiveState] = useState(null);
-  const [tournament, setTournament] = useState(null);
-  const [dataset, setDataset] = useState(null);
+  const [runConfig, setRunConfig] = useState(defaults);
+  const [runDefaults, setRunDefaults] = useState({});
+  const [timeline, setTimeline] = useState([]);
+  const [snapshotIndex, setSnapshotIndex] = useState(0);
+  const [analysis, setAnalysis] = useState(null);
+  const [sourceMode, setSourceMode] = useState('live');
   const [busy, setBusy] = useState('');
+  const [notice, setNotice] = useState('');
   const [error, setError] = useState('');
+
+  const selected = models.find((m) => m.id === selectedModel);
+  const snapshots = timeline.length ? timeline : (runData.history || []).filter((d) => d.heatmap);
+  const activeSnapshot = snapshots[snapshotIndex] || runData.latest || analysis;
 
   const loadRuns = async () => {
     const data = await api('/api/runs');
-    setRuns(data.runs || []);
-    if (!selectedRun && data.runs?.[0]) setSelectedRun(data.runs[0].run_dir);
+    const nextRuns = data.runs || [];
+    setRuns(nextRuns);
+    if (!selectedRun && nextRuns[0]) setSelectedRun(nextRuns[0].run_dir);
   };
 
   const loadModels = async () => {
     const data = await api('/api/models');
-    setModels(data.models || []);
-    const preferred = data.models?.find((m) => m.kind === 'neural') || data.models?.[0];
+    const nextModels = data.models || [];
+    setModels(nextModels);
+    const preferred = nextModels.find((m) => m.kind === 'neural') || nextModels[0];
     if (preferred && selectedModel === 'random') setSelectedModel(preferred.id);
+  };
+
+  const loadDefaults = async () => {
+    const data = await apiMaybe('/api/run/defaults', null);
+    const values = data?.defaults || {};
+    setRunDefaults(values);
+    if (values.ppo) setRunConfig((current) => ({ ...current, ...values.ppo }));
   };
 
   const loadRun = async (runDir = selectedRun) => {
     if (!runDir) return;
     setError('');
     const data = await api(`/api/run?run_dir=${encodeURIComponent(runDir)}`);
-    setRunData(data);
+    setRunData({ latest: data.latest || data, history: data.history || [] });
+    setSourceMode('saved');
+    setSnapshotIndex(0);
+  };
+
+  const loadTimeline = async (modelId = selectedModel) => {
+    if (!modelId) return;
+    const data = await apiMaybe(`/api/model/timeline?model_id=${encodeURIComponent(modelId)}`, { timeline: [] });
+    setTimeline(Array.isArray(data) ? data : data.timeline || data.snapshots || []);
+    setSnapshotIndex(0);
   };
 
   useEffect(() => {
+    loadDefaults().catch(() => {});
     loadRuns().catch((err) => setError(String(err)));
     loadModels().catch((err) => setError(String(err)));
     const timer = setInterval(async () => {
-      const state = await api('/api/state');
-      setLiveState(state);
-      if (state.latest) setRunData({ latest: state.latest, history: state.history || [] });
+      try {
+        const state = await api('/api/state');
+        setLiveState(state);
+        if (state.latest && sourceMode === 'live') setRunData({ latest: state.latest, history: state.history || [] });
+      } catch {
+        setLiveState((state) => state);
+      }
     }, 1500);
     return () => clearInterval(timer);
-  }, []);
+  }, [sourceMode]);
 
-  const startRun = async (method) => {
-    setBusy(method);
+  useEffect(() => {
+    loadTimeline(selectedModel).catch(() => setTimeline([]));
+  }, [selectedModel]);
+
+  const updateConfig = (key, value) => {
+    setRunConfig((current) => {
+      if (key !== 'method') return { ...current, [key]: value };
+      return { ...current, ...(runDefaults[value] || {}), method: value };
+    });
+  };
+
+  const showLive = () => {
+    setSourceMode('live');
+    if (liveState?.latest) setRunData({ latest: liveState.latest, history: liveState.history || [] });
+  };
+
+  const startRun = async () => {
+    setBusy('run');
+    setNotice('');
     setError('');
+    const body = JSON.stringify(runConfig);
     try {
-      await api('/api/start', {
-        method: 'POST',
-        body: JSON.stringify({ method, size: 3, episodes: 5000, batch_episodes: 64, log_every: 100 }),
-      });
+      const data = await api('/api/run', { method: 'POST', body });
+      setSourceMode('live');
+      setNotice(data?.run_dir ? `Started ${data.run_dir}` : 'Run submitted');
+      await loadRuns();
     } catch (err) {
       setError(String(err));
     } finally {
@@ -115,19 +197,11 @@ function RunViewerApp() {
   };
 
   const stopRun = async () => {
-    await api('/api/stop', { method: 'POST' });
-  };
-
-  const runTournament = async () => {
-    setBusy('tournament');
+    setBusy('stop');
     setError('');
     try {
-      const ids = models.slice(0, 6).map((m) => m.id);
-      const data = await api('/api/eval/tournament', {
-        method: 'POST',
-        body: JSON.stringify({ model_ids: ids, size: 3, games: 12 }),
-      });
-      setTournament(data);
+      await api('/api/stop', { method: 'POST' });
+      setNotice('Stop requested');
     } catch (err) {
       setError(String(err));
     } finally {
@@ -135,16 +209,17 @@ function RunViewerApp() {
     }
   };
 
-  const generateDataset = async () => {
-    setBusy('dataset');
+  const analyzeModel = async () => {
+    setBusy('analyze');
     setError('');
     try {
-      const data = await api('/api/selfplay/generate', {
+      const size = selected?.size || runConfig.size || 3;
+      const data = await api('/api/analyze/position', {
         method: 'POST',
-        body: JSON.stringify({ model_id: selectedModel, size: 3, games: 100, greedy: false }),
+        body: JSON.stringify({ model_id: selectedModel, board: emptyBoard(size), player: 1 }),
       });
-      setDataset(data);
-      await loadRuns();
+      setAnalysis(data);
+      setSnapshotIndex(0);
     } catch (err) {
       setError(String(err));
     } finally {
@@ -154,38 +229,166 @@ function RunViewerApp() {
 
   return (
     <>
-      <Header active="runs" />
-      <main className="layout">
-        <aside>
-          <label>Saved run<select value={selectedRun} onChange={(e) => setSelectedRun(e.target.value)}>
-            {runs.map((r) => <option key={r.run_dir} value={r.run_dir}>{r.method} · {r.run_id || r.run_dir}</option>)}
-          </select></label>
-          <button onClick={() => loadRun()}>Load selected run</button>
-          <button onClick={() => startRun('ppo')} disabled={Boolean(busy)}>Start PPO 5k</button>
-          <button onClick={() => startRun('grpo')} disabled={Boolean(busy)}>Start GRPO 5k</button>
-          <button onClick={stopRun}>Stop active run</button>
-          <label>Dataset model<select value={selectedModel} onChange={(e) => setSelectedModel(e.target.value)}>
-            {models.map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}
-          </select></label>
-          <button onClick={generateDataset} disabled={Boolean(busy)}>Generate 100-game dataset</button>
-          <button onClick={runTournament} disabled={Boolean(busy)}>Run tournament</button>
-          <div className="status">
-            <span>{liveState?.running ? 'training active' : 'idle'}</span>
-            <span>{busy ? `working: ${busy}` : runData.latest?.method || 'no run loaded'}</span>
-            {error && <b>{error}</b>}
+      <Header active="lab" />
+      <main className="lab-page paper-width">
+        <section className="paper-section title-row">
+          <div>
+            <p className="kicker">Experiment record</p>
+            <h1>Research Lab</h1>
+            <p className="lede">Configure Qubic training runs, track live outcomes, and inspect saved model policy surfaces over time.</p>
           </div>
-        </aside>
-        <section className="panel">
-          <RunSummary latest={runData.latest} />
-          <MetricsChart history={runData.history || []} />
-          {runData.latest?.heatmap && <Board3D analysis={runData.latest} compact />}
-          <Artifacts latest={runData.latest} />
-          <RunList runs={runs} onLoad={(runDir) => { setSelectedRun(runDir); loadRun(runDir); }} />
-          {dataset && <JsonBlock title="Latest self-play dataset" value={dataset} />}
-          {tournament && <JsonBlock title="Tournament" value={tournament.leaderboard} />}
+          <div className="run-state">
+            <span>{liveState?.running ? 'running' : 'idle'}</span>
+            <span>{sourceMode === 'live' ? 'live source' : 'saved source'}</span>
+            <b>{runData.latest?.method ? methodLabel(runData.latest.method) : 'no active run'}</b>
+          </div>
+        </section>
+
+        {(error || notice) && <div className={error ? 'message error' : 'message'}>{error || notice}</div>}
+
+        <section className="lab-grid">
+          <aside className="control-rail paper-section">
+            <h2>Run Parameters</h2>
+            <RunControls config={runConfig} onChange={updateConfig} busy={busy} onStart={startRun} onStop={stopRun} />
+
+            <h2>Saved Sources</h2>
+            <button onClick={showLive} disabled={!liveState?.latest}>Show live state</button>
+            <label>Saved run
+              <select value={selectedRun} onChange={(e) => setSelectedRun(e.target.value)}>
+                <option value="">Select run</option>
+                {runs.map((r) => <option key={r.run_dir} value={r.run_dir}>{methodLabel(r.method)} · {r.run_id || r.run_dir}</option>)}
+              </select>
+            </label>
+            <button onClick={() => loadRun()} disabled={!selectedRun}>Load run</button>
+
+            <label>Model
+              <select value={selectedModel} onChange={(e) => setSelectedModel(e.target.value)}>
+                {models.map((m) => <option key={m.id} value={m.id}>{m.label || m.id}</option>)}
+              </select>
+            </label>
+            <button onClick={analyzeModel} disabled={!selectedModel || Boolean(busy)}>Analyze opening</button>
+          </aside>
+
+          <section className="paper-stack">
+            <SystemInputs config={runConfig} selected={selected} latest={runData.latest} />
+            <RunSummary latest={runData.latest} analysis={analysis} />
+            <MetricsChart history={runData.history || []} />
+            <SnapshotViewer
+              snapshot={activeSnapshot}
+              snapshots={snapshots}
+              snapshotIndex={snapshotIndex}
+              onIndex={setSnapshotIndex}
+              analysis={analysis}
+            />
+            <div className="two-column">
+              <ModelCatalog models={models} selectedModel={selectedModel} onSelect={setSelectedModel} />
+              <RunList runs={runs} onLoad={(runDir) => { setSelectedRun(runDir); loadRun(runDir); }} />
+            </div>
+            <Artifacts latest={runData.latest} />
+          </section>
         </section>
       </main>
     </>
+  );
+}
+
+function RunControls({ config, onChange, busy, onStart, onStop }) {
+  const number = (key) => (event) => onChange(key, Number(event.target.value));
+  const isPolicyGradient = ['ppo', 'grpo'].includes(config.method);
+  return (
+    <div className="form-grid">
+      <label>Method
+        <select value={config.method} onChange={(e) => onChange('method', e.target.value)}>
+          <option value="ppo">PPO</option>
+          <option value="grpo">GRPO</option>
+          <option value="q_learning">Q-learning</option>
+          <option value="sarsa">SARSA</option>
+          <option value="expected_sarsa">Expected SARSA</option>
+          <option value="monte_carlo">Monte Carlo</option>
+        </select>
+      </label>
+      <label>Board size<input type="number" min="2" max={isPolicyGradient ? 5 : 4} value={config.size} onChange={number('size')} /></label>
+      <label>Episodes<input type="number" min="1" step="500" value={config.episodes} onChange={number('episodes')} /></label>
+      <label>Log every<input type="number" min="1" step="25" value={config.log_every} onChange={number('log_every')} /></label>
+      <label>Gamma<input type="number" min="0" max="1" step="0.01" value={config.gamma} onChange={number('gamma')} /></label>
+      <label>Seed<input type="number" step="1" value={config.seed} onChange={number('seed')} /></label>
+      {isPolicyGradient ? (
+        <>
+          <label>Batch episodes<input type="number" min="1" step="8" value={config.batch_episodes || 32} onChange={number('batch_episodes')} /></label>
+          <label>Update epochs<input type="number" min="1" step="1" value={config.update_epochs || 4} onChange={number('update_epochs')} /></label>
+          <label>Hidden width<input type="number" min="8" step="16" value={config.hidden || 128} onChange={number('hidden')} /></label>
+          <label>Learning rate<input type="number" min="0" step="0.0001" value={config.lr || 0.0003} onChange={number('lr')} /></label>
+          <label>Clip epsilon<input type="number" min="0.01" max="1" step="0.01" value={config.clip_eps || 0.2} onChange={number('clip_eps')} /></label>
+          <label>Entropy coef<input type="number" min="0" step="0.005" value={config.entropy_coef || 0} onChange={number('entropy_coef')} /></label>
+          <label>Value coef<input type="number" min="0" step="0.05" value={config.value_coef || 0} onChange={number('value_coef')} /></label>
+        </>
+      ) : (
+        <>
+          <label>Alpha<input type="number" min="0" max="1" step="0.01" value={config.alpha || 0.25} onChange={number('alpha')} /></label>
+          <label>Epsilon<input type="number" min="0" max="1" step="0.01" value={config.epsilon || 0.35} onChange={number('epsilon')} /></label>
+          <label>Epsilon min<input type="number" min="0" max="1" step="0.01" value={config.epsilon_min || 0.03} onChange={number('epsilon_min')} /></label>
+          <label>Epsilon decay<input type="number" min="0" max="1" step="0.0001" value={config.epsilon_decay || 0.9995} onChange={number('epsilon_decay')} /></label>
+        </>
+      )}
+      <div className="button-row span-2">
+        <button onClick={onStart} disabled={Boolean(busy)}>Start run</button>
+        <button onClick={onStop} disabled={busy === 'stop'}>Stop</button>
+      </div>
+    </div>
+  );
+}
+
+function SystemInputs({ config, selected, latest }) {
+  const rows = [
+    ['method', methodLabel(config.method)],
+    ['episodes', config.episodes],
+    ['batch', config.batch_episodes || 'n/a'],
+    ['log every', config.log_every],
+    ['lr / alpha', config.lr || config.alpha || 'n/a'],
+    ['model', selected?.label || selected?.id || 'none'],
+    ['model kind', selected?.kind || 'unknown'],
+    ['run dir', latest?.run_dir || 'none'],
+    ['latest episode', latest?.episode || 0],
+  ];
+  return (
+    <section className="paper-section">
+      <h2>System Inputs</h2>
+      <dl className="input-table">
+        {rows.map(([key, value]) => (
+          <React.Fragment key={key}>
+            <dt>{key}</dt>
+            <dd>{value}</dd>
+          </React.Fragment>
+        ))}
+      </dl>
+    </section>
+  );
+}
+
+function SnapshotViewer({ snapshot, snapshots, snapshotIndex, onIndex, analysis }) {
+  const max = Math.max(0, snapshots.length - 1);
+  const source = snapshot || analysis;
+  return (
+    <section className="paper-section">
+      <div className="section-head">
+        <div>
+          <h2>Policy Heatmap</h2>
+          <p>{snapshots.length ? `Snapshot ${snapshotIndex + 1} of ${snapshots.length}` : 'Current or analyzed position'}</p>
+        </div>
+        <label className="range-label">time
+          <input
+            type="range"
+            min="0"
+            max={max}
+            value={Math.min(snapshotIndex, max)}
+            onChange={(e) => onIndex(Number(e.target.value))}
+            disabled={!snapshots.length}
+          />
+        </label>
+      </div>
+      <Board3D analysis={source} compact />
+      <PolicyTable analysis={source} />
+    </section>
   );
 }
 
@@ -199,8 +402,9 @@ function PlayApp() {
 
   useEffect(() => {
     api('/api/models').then((data) => {
-      setModels(data.models || []);
-      const preferred = data.models?.find((m) => m.kind === 'neural') || data.models?.[0];
+      const nextModels = data.models || [];
+      setModels(nextModels);
+      const preferred = nextModels.find((m) => m.kind === 'neural') || nextModels[0];
       if (preferred) setSelectedModel(preferred.id);
     }).catch((err) => setError(String(err)));
   }, []);
@@ -208,24 +412,18 @@ function PlayApp() {
   const selected = models.find((m) => m.id === selectedModel);
   const size = selected?.size || 3;
 
-  const analyzeOpening = async () => {
-    setError('');
-    const data = await api('/api/analyze/position', {
-      method: 'POST',
-      body: JSON.stringify({ model_id: selectedModel, board: emptyBoard(size), player: 1 }),
-    });
-    setGame(null);
-    setAnalysis(data);
-  };
-
   const newGame = async () => {
     setError('');
-    const data = await api('/api/play/new', {
-      method: 'POST',
-      body: JSON.stringify({ model_id: selectedModel, size, human_player: humanPlayer }),
-    });
-    setGame({ ...data, human_moves: [] });
-    setAnalysis(data.state);
+    try {
+      const data = await api('/api/play/new', {
+        method: 'POST',
+        body: JSON.stringify({ model_id: selectedModel, size, human_player: humanPlayer }),
+      });
+      setGame({ ...data, human_moves: [] });
+      setAnalysis(data.state);
+    } catch (err) {
+      setError(String(err));
+    }
   };
 
   const playMove = async (move) => {
@@ -247,27 +445,38 @@ function PlayApp() {
   return (
     <>
       <Header active="play" />
-      <main className="play-layout">
-        <section className="panel play-main">
-          <div className="toolbar">
-            <label>Model<select value={selectedModel} onChange={(e) => setSelectedModel(e.target.value)}>
-              {models.map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}
-            </select></label>
-            <label>Side<select value={humanPlayer} onChange={(e) => setHumanPlayer(Number(e.target.value))}>
-              <option value={1}>Human X</option>
-              <option value={-1}>Human O</option>
-            </select></label>
-            <button onClick={newGame}>New game</button>
-            <button onClick={analyzeOpening}>Analyze opening</button>
+      <main className="play-page paper-width">
+        <section className="paper-section title-row">
+          <div>
+            <p className="kicker">Standalone board</p>
+            <h1>Play Qubic</h1>
           </div>
-          {error && <div className="error">{error}</div>}
-          <Summary analysis={analysis} game={game} />
-          <Board3D analysis={analysis} onMove={game && !game.done ? playMove : null} />
+          <div className="toolbar compact-toolbar">
+            <label>Model
+              <select value={selectedModel} onChange={(e) => setSelectedModel(e.target.value)}>
+                {models.map((m) => <option key={m.id} value={m.id}>{m.label || m.id}</option>)}
+              </select>
+            </label>
+            <label>Side
+              <select value={humanPlayer} onChange={(e) => setHumanPlayer(Number(e.target.value))}>
+                <option value={1}>Human X</option>
+                <option value={-1}>Human O</option>
+              </select>
+            </label>
+            <button onClick={newGame}>New game</button>
+          </div>
         </section>
-        <aside className="play-side">
-          <MoveButtons analysis={analysis} onMove={game && !game.done ? playMove : null} />
-          <MoveList game={game} />
-        </aside>
+        {error && <div className="message error">{error}</div>}
+        <section className="play-grid">
+          <div className="paper-section play-board">
+            <Summary analysis={analysis} game={game} />
+            <Board3D analysis={analysis} onMove={game && !game.done ? playMove : null} />
+          </div>
+          <aside className="paper-section play-tools">
+            <MoveButtons analysis={analysis} onMove={game && !game.done ? playMove : null} />
+            <MoveList game={game} />
+          </aside>
+        </section>
       </main>
     </>
   );
@@ -370,11 +579,11 @@ function drawBoard(ctx, canvas, analysis, view, playable) {
   const w = canvas.width;
   const h = canvas.height;
   ctx.clearRect(0, 0, w, h);
-  ctx.fillStyle = '#101418';
+  ctx.fillStyle = '#fbfaf5';
   ctx.fillRect(0, 0, w, h);
   if (!analysis?.heatmap) {
-    ctx.fillStyle = '#9badb4';
-    ctx.font = '22px Inter, system-ui';
+    ctx.fillStyle = '#6f6659';
+    ctx.font = '22px Georgia, serif';
     ctx.fillText('Choose a model, load a run, or start a game.', 36, 52);
     return;
   }
@@ -398,11 +607,11 @@ function drawBoard(ctx, canvas, analysis, view, playable) {
   };
 
   for (let y = 0; y < size; y += 1) {
-    for (let z = 0; z < size; z += 1) line({ x: 0, y, z }, { x: size - 1, y, z }, 'rgba(130,150,158,.25)');
-    for (let x = 0; x < size; x += 1) line({ x, y, z: 0 }, { x, y, z: size - 1 }, 'rgba(130,150,158,.25)');
+    for (let z = 0; z < size; z += 1) line({ x: 0, y, z }, { x: size - 1, y, z }, 'rgba(58,50,42,.24)');
+    for (let x = 0; x < size; x += 1) line({ x, y, z: 0 }, { x, y, z: size - 1 }, 'rgba(58,50,42,.24)');
   }
   for (let x = 0; x < size; x += 1) {
-    for (let z = 0; z < size; z += 1) line({ x, y: 0, z }, { x, y: size - 1, z }, 'rgba(130,150,158,.16)');
+    for (let z = 0; z < size; z += 1) line({ x, y: 0, z }, { x, y: size - 1, z }, 'rgba(58,50,42,.14)');
   }
 
   drawArrows(ctx, analysis, view, scale, cx, cy);
@@ -421,14 +630,14 @@ function drawBoard(ctx, canvas, analysis, view, playable) {
     const radius = occ ? 25 : 10 + 26 * Math.abs(norm);
     ctx.beginPath();
     ctx.arc(p.screen.x, p.screen.y, radius, 0, Math.PI * 2);
-    ctx.fillStyle = occ === 1 ? '#67d2a7' : occ === -1 ? '#f07c6b' : valueColor(norm, legal.has(idx) ? 0.92 : 0.22);
+    ctx.fillStyle = occ === 1 ? '#2f6f59' : occ === -1 ? '#a7503f' : valueColor(norm, legal.has(idx) ? 0.82 : 0.2);
     ctx.fill();
-    ctx.strokeStyle = idx === bestMove ? '#f5c15d' : playable && legal.has(idx) ? '#dce7e9' : 'rgba(235,242,244,.38)';
+    ctx.strokeStyle = idx === bestMove ? '#9c6b18' : playable && legal.has(idx) ? '#221f1a' : 'rgba(52,45,37,.42)';
     ctx.lineWidth = idx === bestMove ? 5 : playable && legal.has(idx) ? 2 : 1;
     ctx.stroke();
     if (occ) {
-      ctx.fillStyle = '#07100d';
-      ctx.font = 'bold 24px Inter, system-ui';
+      ctx.fillStyle = '#fbfaf5';
+      ctx.font = 'bold 24px Georgia, serif';
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
       ctx.fillText(occ === 1 ? 'X' : 'O', p.screen.x, p.screen.y + 1);
@@ -437,13 +646,13 @@ function drawBoard(ctx, canvas, analysis, view, playable) {
 
   ctx.textAlign = 'left';
   ctx.textBaseline = 'alphabetic';
-  ctx.fillStyle = '#e6ecef';
-  ctx.font = '19px Inter, system-ui';
+  ctx.fillStyle = '#221f1a';
+  ctx.font = '19px Georgia, serif';
   const best = analysis.top_moves?.[0];
-  ctx.fillText(best ? `best (${best.x},${best.y},${best.z}) p=${best.prob.toFixed(3)} value=${Number(analysis.value || 0).toFixed(3)}` : 'terminal position', 32, 38);
-  ctx.fillStyle = '#9badb4';
-  ctx.font = '14px Inter, system-ui';
-  ctx.fillText('green: X  red: O  amber arrows: top policy moves  drag: rotate', 32, h - 28);
+  ctx.fillText(best ? `best (${best.x},${best.y},${best.z})  p=${fixed(best.prob)}  value=${fixed(analysis.value)}` : 'terminal position', 32, 38);
+  ctx.fillStyle = '#6f6659';
+  ctx.font = '14px ui-monospace, SFMono-Regular, Menlo, monospace';
+  ctx.fillText('X: green  O: red  arrows: top policy  drag: rotate', 32, h - 28);
 }
 
 function drawArrows(ctx, analysis, view, scale, cx, cy) {
@@ -457,7 +666,7 @@ function drawArrows(ctx, analysis, view, scale, cx, cy) {
     const b = project(target, size, view, scale, cx, cy);
     const end = { x: a.x + (b.x - a.x) * 0.82, y: a.y + (b.y - a.y) * 0.82 };
     const alpha = Math.max(0.18, Math.min(0.9, move.prob * 8));
-    const color = `rgba(245,193,93,${alpha})`;
+    const color = `rgba(156,107,24,${alpha})`;
     ctx.strokeStyle = color;
     ctx.lineWidth = 2 + 5 * move.prob;
     ctx.beginPath();
@@ -476,9 +685,9 @@ function drawArrows(ctx, analysis, view, scale, cx, cy) {
 }
 
 function valueColor(t, alpha) {
-  if (t >= 0) return `rgba(${Math.round(100 + 80 * t)},${Math.round(165 + 70 * t)},${Math.round(145 + 20 * t)},${alpha})`;
+  if (t >= 0) return `rgba(${Math.round(72 + 55 * t)},${Math.round(132 + 65 * t)},${Math.round(108 + 25 * t)},${alpha})`;
   const u = -t;
-  return `rgba(${Math.round(230 + 15 * u)},${Math.round(140 - 40 * u)},${Math.round(110 - 30 * u)},${alpha})`;
+  return `rgba(${Math.round(170 + 25 * u)},${Math.round(92 - 22 * u)},${Math.round(72 - 18 * u)},${alpha})`;
 }
 
 function MetricsChart({ history }) {
@@ -493,59 +702,62 @@ function MetricsChart({ history }) {
 
 function drawMetrics(ctx, canvas, history) {
   ctx.clearRect(0, 0, canvas.width, canvas.height);
-  ctx.fillStyle = '#101418';
+  ctx.fillStyle = '#fbfaf5';
   ctx.fillRect(0, 0, canvas.width, canvas.height);
-  ctx.fillStyle = '#e6ecef';
-  ctx.font = '22px Inter, system-ui';
+  ctx.fillStyle = '#221f1a';
+  ctx.font = '22px Georgia, serif';
   ctx.fillText('Training diagnostics', 56, 34);
   if (history.length < 2) {
-    ctx.fillStyle = '#9badb4';
-    ctx.font = '17px Inter, system-ui';
+    ctx.fillStyle = '#6f6659';
+    ctx.font = '17px Georgia, serif';
     ctx.fillText('Load or start a run to draw live plots.', 56, 70);
     return;
   }
-  const xs = history.map((d) => d.episode);
+  const xs = history.map((d) => d.episode || d.step || 0);
   const minX = Math.min(...xs);
   const maxX = Math.max(...xs);
   const panels = [
     { x: 78, y: 60, w: 1080, h: 150, title: 'Outcome rates', ymin: 0, ymax: 1 },
-    { x: 78, y: 260, w: 1080, h: 130, title: 'Optimization', ymin: 0, ymax: Math.max(0.05, ...history.map((d) => Math.abs(Number(d.mean_abs_update || 0)))) },
+    { x: 78, y: 260, w: 1080, h: 130, title: 'Value and update magnitude', ymin: -1, ymax: 1 },
     { x: 78, y: 450, w: 1080, h: 130, title: 'Policy statistics', ymin: 0, ymax: Math.max(0.05, ...history.map((d) => Number(d.entropy || 0)), ...history.map((d) => Number(d.approx_kl || 0))) },
   ];
   for (const p of panels) axes(ctx, p);
-  series(ctx, panels[0], history, minX, maxX, (d) => d.recent?.x_win_rate, '#67d2a7');
-  series(ctx, panels[0], history, minX, maxX, (d) => d.recent?.o_win_rate, '#f07c6b');
-  series(ctx, panels[0], history, minX, maxX, (d) => d.recent?.draw_rate, '#7aa7ff');
-  series(ctx, panels[1], history, minX, maxX, (d) => Math.abs(Number(d.mean_abs_update || 0)), '#f5c15d');
-  series(ctx, panels[2], history, minX, maxX, (d) => Number(d.entropy || 0), '#b58cff');
-  series(ctx, panels[2], history, minX, maxX, (d) => Number(d.approx_kl || 0), '#5cc8ff');
+  series(ctx, panels[0], history, minX, maxX, (d) => d.recent?.x_win_rate, '#2f6f59');
+  series(ctx, panels[0], history, minX, maxX, (d) => d.recent?.o_win_rate, '#a7503f');
+  series(ctx, panels[0], history, minX, maxX, (d) => d.recent?.draw_rate, '#526f9e');
+  series(ctx, panels[1], history, minX, maxX, (d) => d.value ?? d.mean_value, '#2b5f88');
+  series(ctx, panels[1], history, minX, maxX, (d) => Math.abs(Number(d.mean_abs_update || 0)), '#9c6b18');
+  series(ctx, panels[2], history, minX, maxX, (d) => Number(d.entropy || 0), '#6b5b95');
+  series(ctx, panels[2], history, minX, maxX, (d) => Number(d.approx_kl || 0), '#477486');
 }
 
 function axes(ctx, p) {
-  ctx.fillStyle = '#151c21';
+  ctx.fillStyle = '#f7f3ea';
   ctx.fillRect(p.x, p.y, p.w, p.h);
-  ctx.strokeStyle = '#31434a';
+  ctx.strokeStyle = '#a99c88';
   ctx.strokeRect(p.x, p.y, p.w, p.h);
-  ctx.fillStyle = '#dce7e9';
-  ctx.font = '16px Inter, system-ui';
+  ctx.fillStyle = '#221f1a';
+  ctx.font = '16px Georgia, serif';
   ctx.fillText(p.title, p.x + 12, p.y + 22);
-  ctx.fillStyle = '#8fa2a9';
-  ctx.font = '12px Inter, system-ui';
+  ctx.fillStyle = '#746b5d';
+  ctx.font = '12px ui-monospace, SFMono-Regular, Menlo, monospace';
   for (let i = 0; i <= 4; i += 1) {
     const frac = i / 4;
     const y = p.y + p.h - frac * p.h;
     const v = p.ymin + frac * (p.ymax - p.ymin);
-    ctx.strokeStyle = '#26343a';
+    ctx.strokeStyle = '#ded5c7';
     ctx.beginPath();
     ctx.moveTo(p.x, y);
     ctx.lineTo(p.x + p.w, y);
     ctx.stroke();
-    ctx.fillText(v.toFixed(2), p.x - 44, y + 4);
+    ctx.fillText(v.toFixed(2), p.x - 48, y + 4);
   }
 }
 
 function series(ctx, p, history, minX, maxX, getY, color) {
-  const values = history.map((d) => ({ x: d.episode, y: Number(getY(d)) })).filter((d) => Number.isFinite(d.y));
+  const values = history
+    .map((d) => ({ x: d.episode || d.step || 0, y: Number(getY(d)) }))
+    .filter((d) => Number.isFinite(d.y));
   if (values.length < 2) return;
   ctx.strokeStyle = color;
   ctx.lineWidth = 2.6;
@@ -559,28 +771,82 @@ function series(ctx, p, history, minX, maxX, getY, color) {
   ctx.stroke();
 }
 
-function RunSummary({ latest }) {
+function RunSummary({ latest, analysis }) {
   const recent = latest?.recent || {};
+  const top = (latest?.top_moves || analysis?.top_moves || []).slice(0, 4);
   return (
-    <div className="summary">
-      <div><span>Method</span><strong>{latest?.method || 'none'}</strong></div>
-      <div><span>Episode</span><strong>{latest?.episode || 0}</strong></div>
-      <div><span>X win</span><strong>{Math.round((recent.x_win_rate || 0) * 100)}%</strong></div>
-      <div><span>Draw</span><strong>{Math.round((recent.draw_rate || 0) * 100)}%</strong></div>
+    <section className="summary-grid">
+      <Metric label="Method" value={latest?.method ? methodLabel(latest.method) : 'none'} />
+      <Metric label="Episode" value={latest?.episode || 0} />
+      <Metric label="X win" value={pct(recent.x_win_rate)} />
+      <Metric label="O win" value={pct(recent.o_win_rate)} />
+      <Metric label="Draw" value={pct(recent.draw_rate)} />
+      <Metric label="Value" value={fixed(latest?.value ?? analysis?.value)} />
+      <div className="metric policy-cell">
+        <span>Top policy moves</span>
+        <div>{top.length ? top.map((m) => <b key={m.move}>({m.x},{m.y},{m.z}) {fixed(m.prob, 2)}</b>) : 'none'}</div>
+      </div>
+    </section>
+  );
+}
+
+function Metric({ label, value }) {
+  return <div className="metric"><span>{label}</span><strong>{value}</strong></div>;
+}
+
+function Summary({ analysis, game }) {
+  const top = analysis?.top_moves?.slice(0, 4) || [];
+  const status = game?.done ? (game.winner === 0 ? 'draw' : `${game.winner === 1 ? 'X' : 'O'} wins`) : 'active';
+  return (
+    <div className="summary-grid play-summary">
+      <Metric label="Value" value={fixed(analysis?.value)} />
+      <Metric label="To move" value={analysis?.player === -1 ? 'O' : 'X'} />
+      <Metric label="Status" value={status} />
+      <div className="metric policy-cell">
+        <span>Top moves</span>
+        <div>{top.length ? top.map((m) => <b key={m.move}>({m.x},{m.y},{m.z}) {fixed(m.prob, 2)}</b>) : 'new game pending'}</div>
+      </div>
     </div>
   );
 }
 
-function Summary({ analysis, game }) {
-  const top = analysis?.top_moves?.slice(0, 5) || [];
-  const status = game?.done ? (game.winner === 0 ? 'draw' : `${game.winner === 1 ? 'X' : 'O'} wins`) : 'active';
+function PolicyTable({ analysis }) {
+  const top = analysis?.top_moves?.slice(0, 8) || [];
   return (
-    <div className="summary">
-      <div><span>Value</span><strong>{Number(analysis?.value || 0).toFixed(3)}</strong></div>
-      <div><span>To move</span><strong>{analysis?.player === -1 ? 'O' : 'X'}</strong></div>
-      <div><span>Status</span><strong>{status}</strong></div>
-      <div className="topmoves"><span>Top moves</span>{top.map((m) => <b key={m.move}>({m.x},{m.y},{m.z}) {m.prob.toFixed(2)}</b>)}</div>
-    </div>
+    <table className="policy-table">
+      <thead><tr><th>rank</th><th>move</th><th>probability</th><th>value</th></tr></thead>
+      <tbody>
+        {top.map((m, index) => (
+          <tr key={m.move}>
+            <td>{index + 1}</td>
+            <td>({m.x}, {m.y}, {m.z})</td>
+            <td>{fixed(m.prob, 4)}</td>
+            <td>{fixed(m.value ?? analysis.value)}</td>
+          </tr>
+        ))}
+        {!top.length && <tr><td colSpan="4">No policy distribution available.</td></tr>}
+      </tbody>
+    </table>
+  );
+}
+
+function ModelCatalog({ models, selectedModel, onSelect }) {
+  return (
+    <section className="paper-section compact-section">
+      <h2>Model Catalog</h2>
+      <div className="list-stack">
+        {models.slice(0, 12).map((model) => (
+          <button
+            className={model.id === selectedModel ? 'row-button active' : 'row-button'}
+            key={model.id}
+            onClick={() => onSelect(model.id)}
+          >
+            <span>{model.label || model.id}</span>
+            <small>{model.kind || 'model'} · size {model.size || 3}</small>
+          </button>
+        ))}
+      </div>
+    </section>
   );
 }
 
@@ -588,29 +854,30 @@ function Artifacts({ latest }) {
   if (!latest?.run_dir) return null;
   const files = ['analysis.md', 'analysis.json', 'curves.png', 'first_move_heatmap.png', 'first_move_policy.json', 'model.pt'];
   return (
-    <div className="artifact-row">
-      {files.map((file) => (
-        <a key={file} href={`/api/artifact?run_dir=${encodeURIComponent(latest.run_dir)}&file=${file}`} target="_blank" rel="noreferrer">{file}</a>
-      ))}
-    </div>
+    <section className="paper-section compact-section">
+      <h2>Artifacts</h2>
+      <div className="artifact-row">
+        {files.map((file) => (
+          <a key={file} href={`/api/artifact?run_dir=${encodeURIComponent(latest.run_dir)}&file=${file}`} target="_blank" rel="noreferrer">{file}</a>
+        ))}
+      </div>
+    </section>
   );
 }
 
 function RunList({ runs, onLoad }) {
   return (
-    <div>
-      <h2>Saved runs</h2>
-      <div className="rungrid">
-        {runs.slice(0, 24).map((r) => (
-          <article key={r.run_dir}>
-            <h3>{r.method || 'run'} · {r.run_id || r.run_dir}</h3>
-            <p>{r.run_dir}</p>
-            <p>X {Math.round((r.recent?.x_win_rate || 0) * 100)}% · O {Math.round((r.recent?.o_win_rate || 0) * 100)}% · ep {r.episode || 0}</p>
-            <button onClick={() => onLoad(r.run_dir)}>Open</button>
-          </article>
+    <section className="paper-section compact-section">
+      <h2>Saved Runs</h2>
+      <div className="list-stack">
+        {runs.slice(0, 12).map((r) => (
+          <button className="row-button" key={r.run_dir} onClick={() => onLoad(r.run_dir)}>
+            <span>{methodLabel(r.method)} · {r.run_id || r.run_dir}</span>
+            <small>X {pct(r.recent?.x_win_rate)} · O {pct(r.recent?.o_win_rate)} · ep {r.episode || 0}</small>
+          </button>
         ))}
       </div>
-    </div>
+    </section>
   );
 }
 
@@ -621,32 +888,30 @@ function MoveButtons({ analysis, onMove }) {
   }, [analysis]);
   return (
     <div className="move-panel">
-      <h2>Legal moves</h2>
+      <h2>Legal Coordinates</h2>
       <div className="move-grid">
         {moves.map((m) => (
           <button key={m.move} disabled={!onMove} onClick={() => onMove?.(m.move)}>
             {m.x},{m.y},{m.z}
           </button>
         ))}
+        {!moves.length && <p>No legal moves loaded.</p>}
       </div>
     </div>
   );
 }
 
 function MoveList({ game }) {
+  const history = game?.history || game?.moves || [];
   return (
     <div className="move-panel">
-      <h2>Game history</h2>
-      <pre className="json">{game ? JSON.stringify({ done: game.done, winner: game.winner, history: game.history }, null, 2) : 'Start a game to make moves.'}</pre>
-    </div>
-  );
-}
-
-function JsonBlock({ title, value }) {
-  return (
-    <div>
-      <h2>{title}</h2>
-      <pre className="json">{JSON.stringify(value, null, 2)}</pre>
+      <h2>History</h2>
+      <ol className="history-list">
+        {history.map((move, index) => (
+          <li key={`${index}-${JSON.stringify(move)}`}>{typeof move === 'number' ? move : JSON.stringify(move)}</li>
+        ))}
+        {!history.length && <li>Start a game to make moves.</li>}
+      </ol>
     </div>
   );
 }
@@ -654,5 +919,5 @@ function JsonBlock({ title, value }) {
 const path = window.location.pathname;
 const root = createRoot(document.getElementById('root'));
 if (path.startsWith('/play')) root.render(<PlayApp />);
-else if (path.startsWith('/runs')) root.render(<RunViewerApp />);
+else if (path.startsWith('/lab') || path.startsWith('/runs')) root.render(<LabApp />);
 else root.render(<Home />);
