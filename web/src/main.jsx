@@ -229,6 +229,39 @@ function LabApp() {
     }
   };
 
+  const stepRun = async () => {
+    setBusy('step');
+    setNotice('');
+    setError('');
+    try {
+      const data = await api('/api/step', { method: 'POST', body: JSON.stringify(runConfig) });
+      setSourceMode('live');
+      setRunData({ latest: data.latest, history: data.history || [] });
+      setArtifacts(data.artifacts || []);
+      setNotice(`Stepped to episode ${data.latest?.episode || 0}`);
+      await loadRuns();
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setBusy('');
+    }
+  };
+
+  const resetStepRun = async () => {
+    setBusy('reset-step');
+    setError('');
+    try {
+      await api('/api/step/reset', { method: 'POST' });
+      setRunData({ latest: null, history: [] });
+      setArtifacts([]);
+      setNotice('Step session reset');
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setBusy('');
+    }
+  };
+
   const analyzeModel = async () => {
     setBusy('analyze');
     setError('');
@@ -268,7 +301,15 @@ function LabApp() {
             </div>
 
             <h2>Run Parameters</h2>
-            <RunControls config={runConfig} onChange={updateConfig} busy={busy} onStart={startRun} onStop={stopRun} />
+            <RunControls
+              config={runConfig}
+              onChange={updateConfig}
+              busy={busy}
+              onStart={startRun}
+              onStop={stopRun}
+              onStep={stepRun}
+              onResetStep={resetStepRun}
+            />
 
             <h2>Saved Sources</h2>
             <button onClick={showLive} disabled={!liveState?.latest}>Show live state</button>
@@ -323,7 +364,7 @@ function LabApp() {
   );
 }
 
-function RunControls({ config, onChange, busy, onStart, onStop }) {
+function RunControls({ config, onChange, busy, onStart, onStop, onStep, onResetStep }) {
   const number = (key) => (event) => onChange(key, Number(event.target.value));
   const isPolicyGradient = ['ppo', 'grpo'].includes(config.method);
   return (
@@ -364,6 +405,10 @@ function RunControls({ config, onChange, busy, onStart, onStop }) {
       <div className="button-row span-2">
         <button onClick={onStart} disabled={Boolean(busy)}>Start run</button>
         <button onClick={onStop} disabled={busy === 'stop'}>Stop</button>
+      </div>
+      <div className="button-row span-2">
+        <button onClick={onStep} disabled={Boolean(busy)}>{config.method === 'ppo' || config.method === 'grpo' ? 'Step batch' : 'Step episode'}</button>
+        <button onClick={onResetStep} disabled={busy === 'reset-step'}>Reset step</button>
       </div>
     </div>
   );

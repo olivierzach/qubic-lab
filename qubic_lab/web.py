@@ -1,16 +1,21 @@
 from __future__ import annotations
 
 import json
+import random
 import threading
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
+import numpy as np
+import torch
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+from qubic_lab.artifacts import load_metrics, write_plot_artifacts
+from qubic_lab.game import State, apply_move, legal_moves, terminal
 from qubic_lab.model_api import (
     analyze_position,
     layers_to_state,
@@ -18,8 +23,30 @@ from qubic_lab.model_api import (
     play_game,
     run_tournament,
 )
-from qubic_lab.rl_deep import DeepRLConfig, train_deep_rl
-from qubic_lab.rl_tabular import TabularConfig, train_tabular
+from qubic_lab.neural import PolicyValueNet
+from qubic_lab.rl_deep import (
+    DeepRLConfig,
+    _snapshot as deep_snapshot,
+    _write_analysis as write_deep_analysis,
+    play_episode,
+    train_deep_rl,
+    update_policy,
+)
+from qubic_lab.rl_tabular import (
+    QTable,
+    TabularConfig,
+    choose_action,
+    expected_policy_value,
+    get_q,
+    save_q_table,
+    snapshot_payload,
+    state_key,
+    train_tabular,
+    write_analysis,
+    write_curves_svg,
+)
+from qubic_lab.runlog import append_jsonl, run_id, write_json, write_metadata
+from qubic_lab.runs import resolve_run_dir
 from qubic_lab.selfplay import SelfPlayConfig, generate_selfplay_dataset
 
 app = FastAPI(title="Qubic Lab")
@@ -29,6 +56,8 @@ _thread: threading.Thread | None = None
 _stop_event: threading.Event | None = None
 _latest: dict[str, Any] | None = None
 _history: list[dict[str, Any]] = []
+_step_lock = threading.Lock()
+_step_session: "TabularStepSession | DeepStepSession | None" = None
 
 RUN_DEFAULTS: dict[str, dict[str, Any]] = {
     "ppo": {
@@ -305,6 +334,243 @@ def _worker(cfg: TabularConfig | DeepRLConfig, stop_event: threading.Event) -> N
                 _latest["running"] = False
 
 
+def _step_signature(cfg: TabularConfig | DeepRLConfig) -> str:
+    payload = asdict(cfg)
+    payload.pop("run_dir", None)
+    return json.dumps(payload, sort_keys=True)
+
+
+class TabularStepSession:
+    def __init__(self, cfg: TabularConfig):
+        method = cfg.method.strip().lower().replace("-", "_")
+        self.cfg = TabularConfig(**{**asdict(cfg), "method": method})
+        self.signature = _step_signature(self.cfg)
+        self.run_dir = resolve_run_dir(self.cfg.run_dir)
+        self.rng = random.Random(self.cfg.seed)
+        self.q: QTable = {}
+        self.outcomes: list[int] = []
+        self.update_magnitudes: list[float] = []
+        self.epsilon = self.cfg.epsilon
+        self.episode = 0
+        self.latest: dict[str, Any] | None = None
+
+        write_json(self.run_dir / "config.json", asdict(self.cfg))
+        write_metadata(
+            self.run_dir,
+            self.cfg,
+            method=self.cfg.method,
+            name=self.cfg.name,
+            parent_run=self.cfg.parent_run,
+        )
+
+    def step(self) -> dict[str, Any]:
+        if self.latest is not None and self.episode >= self.cfg.episodes:
+            return self.latest
+
+        self.episode += 1
+        state = State.new(self.cfg.size)
+        moves_played = 0
+        episode_updates: list[float] = []
+
+        if self.cfg.method == "monte_carlo":
+            trajectory: list[tuple[tuple[int, ...], int, int, int]] = []
+            while True:
+                key = state_key(state)
+                move = choose_action(self.q, state, self.rng, self.epsilon)
+                trajectory.append((key, move, state.player, moves_played))
+                state = apply_move(state, move)
+                moves_played += 1
+                done, winner = terminal(state)
+                if done:
+                    self.outcomes.append(int(winner or 0))
+                    horizon = max(1, moves_played - 1)
+                    for key_i, move_i, player_i, step_i in trajectory:
+                        row = get_q(self.q, key_i, self.cfg.size**3)
+                        if winner == 0:
+                            target = 0.0
+                        else:
+                            sign = 1.0 if player_i == winner else -1.0
+                            target = sign * (self.cfg.gamma ** (horizon - step_i))
+                        delta = target - float(row[move_i])
+                        row[move_i] += self.cfg.alpha * delta
+                        episode_updates.append(abs(delta))
+                    break
+        else:
+            while True:
+                key = state_key(state)
+                row = get_q(self.q, key, self.cfg.size**3)
+                move = choose_action(self.q, state, self.rng, self.epsilon)
+                next_state = apply_move(state, move)
+                moves_played += 1
+                done, winner = terminal(next_state)
+
+                if done:
+                    reward = 0.0 if winner == 0 else 1.0
+                    target = reward
+                    delta = target - float(row[move])
+                    row[move] += self.cfg.alpha * delta
+                    episode_updates.append(abs(delta))
+                    self.outcomes.append(int(winner or 0))
+                    break
+
+                next_row = get_q(self.q, state_key(next_state), self.cfg.size**3)
+                next_moves = legal_moves(next_state)
+                if self.cfg.method == "q_learning":
+                    opponent_best = float(np.max(next_row[next_moves])) if len(next_moves) else 0.0
+                elif self.cfg.method == "sarsa":
+                    next_move = choose_action(self.q, next_state, self.rng, self.epsilon)
+                    opponent_best = float(next_row[next_move])
+                else:
+                    opponent_best = expected_policy_value(next_row, next_moves, self.epsilon)
+                target = -self.cfg.gamma * opponent_best
+                delta = target - float(row[move])
+                row[move] += self.cfg.alpha * delta
+                episode_updates.append(abs(delta))
+                state = next_state
+
+        self.epsilon = max(self.cfg.epsilon_min, self.epsilon * self.cfg.epsilon_decay)
+        self.update_magnitudes.extend(episode_updates)
+        mean_abs_update = float(np.mean(episode_updates)) if episode_updates else 0.0
+        latest = snapshot_payload(
+            cfg=self.cfg,
+            q=self.q,
+            episode=self.episode,
+            epsilon=self.epsilon,
+            outcomes=self.outcomes,
+            run_dir=self.run_dir,
+            running=self.episode < self.cfg.episodes,
+            mean_abs_update=mean_abs_update,
+        )
+        latest["last_episode_moves"] = moves_played
+        latest["step_mode"] = True
+        self.latest = latest
+        self._persist(latest)
+        return latest
+
+    def _persist(self, latest: dict[str, Any]) -> None:
+        append_jsonl(self.run_dir / "metrics.jsonl", latest)
+        write_json(self.run_dir / "latest.json", latest)
+        save_q_table(self.run_dir / "q_table.npz", self.q)
+        metrics = load_metrics(self.run_dir / "metrics.jsonl")
+        write_curves_svg(self.run_dir / "curves.svg", metrics)
+        write_plot_artifacts(self.run_dir, metrics, latest)
+        write_analysis(self.run_dir, self.cfg, metrics, latest)
+        write_json(
+            self.run_dir / "artifacts.json",
+            {
+                "run_id": run_id(self.run_dir),
+                "files": {
+                    "config": "config.json",
+                    "metadata": "metadata.json",
+                    "metrics": "metrics.jsonl",
+                    "latest": "latest.json",
+                    "analysis": "analysis.json",
+                    "analysis_markdown": "analysis.md",
+                    "curves": "curves.svg",
+                    "curves_png": "curves.png",
+                    "first_move_heatmap": "first_move_heatmap.png",
+                    "first_move_policy": "first_move_policy.json",
+                    "q_table": "q_table.npz",
+                },
+            },
+        )
+
+
+class DeepStepSession:
+    def __init__(self, cfg: DeepRLConfig):
+        method = cfg.method.strip().lower().replace("-", "_")
+        self.cfg = DeepRLConfig(**{**asdict(cfg), "method": method})
+        self.signature = _step_signature(self.cfg)
+        torch.manual_seed(self.cfg.seed)
+        self.rng = np.random.default_rng(self.cfg.seed)
+        self.run_dir = resolve_run_dir(self.cfg.run_dir)
+        self.model = PolicyValueNet(self.cfg.size, self.cfg.hidden).to(self.cfg.device)
+        self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=self.cfg.lr)
+        self.outcomes: list[int] = []
+        self.episode = 0
+        self.latest: dict[str, Any] | None = None
+        self.losses = {
+            "loss": 0.0,
+            "policy_loss": 0.0,
+            "value_loss": 0.0,
+            "entropy": 0.0,
+            "approx_kl": 0.0,
+        }
+
+        write_json(self.run_dir / "config.json", asdict(self.cfg))
+        write_metadata(
+            self.run_dir,
+            self.cfg,
+            method=self.cfg.method,
+            name=self.cfg.name,
+            parent_run=self.cfg.parent_run,
+        )
+
+    def step(self) -> dict[str, Any]:
+        if self.latest is not None and self.episode >= self.cfg.episodes:
+            return self.latest
+
+        batch_steps = []
+        group_ids: list[int] = []
+        for group in range(self.cfg.batch_episodes):
+            if self.episode >= self.cfg.episodes:
+                break
+            steps, outcome = play_episode(self.model, self.cfg.size, self.rng, self.cfg)
+            batch_steps.extend(steps)
+            group_ids.extend([group] * len(steps))
+            self.outcomes.append(outcome)
+            self.episode += 1
+
+        if batch_steps:
+            self.losses = update_policy(self.model, self.optimizer, batch_steps, np.asarray(group_ids), self.cfg)
+
+        latest = deep_snapshot(
+            self.cfg,
+            self.model,
+            self.run_dir,
+            self.episode,
+            self.outcomes,
+            self.losses,
+            running=self.episode < self.cfg.episodes,
+        )
+        latest["step_mode"] = True
+        self.latest = latest
+        self._persist(latest)
+        return latest
+
+    def _persist(self, latest: dict[str, Any]) -> None:
+        append_jsonl(self.run_dir / "metrics.jsonl", latest)
+        write_json(self.run_dir / "latest.json", latest)
+        torch.save({"model": self.model.state_dict(), "config": asdict(self.cfg)}, self.run_dir / "model.pt")
+        metrics = load_metrics(self.run_dir / "metrics.jsonl")
+        write_plot_artifacts(self.run_dir, metrics, latest)
+        write_deep_analysis(self.run_dir, latest)
+        write_json(
+            self.run_dir / "artifacts.json",
+            {
+                "run_id": run_id(self.run_dir),
+                "files": {
+                    "config": "config.json",
+                    "metadata": "metadata.json",
+                    "metrics": "metrics.jsonl",
+                    "latest": "latest.json",
+                    "analysis": "analysis.json",
+                    "analysis_markdown": "analysis.md",
+                    "curves_png": "curves.png",
+                    "first_move_heatmap": "first_move_heatmap.png",
+                    "first_move_policy": "first_move_policy.json",
+                    "model": "model.pt",
+                },
+            },
+        )
+
+
+def _make_step_session(cfg: TabularConfig | DeepRLConfig) -> TabularStepSession | DeepStepSession:
+    if cfg.method in {"ppo", "grpo"}:
+        return DeepStepSession(cfg)
+    return TabularStepSession(cfg)
+
+
 @app.get("/api/state")
 def state() -> JSONResponse:
     with _lock:
@@ -313,6 +579,7 @@ def state() -> JSONResponse:
                 "running": _thread is not None and _thread.is_alive(),
                 "latest": _latest,
                 "history": _history[-300:],
+                "step_mode": bool(_latest and _latest.get("step_mode")),
             }
         )
 
@@ -354,6 +621,52 @@ def stop() -> JSONResponse:
     with _lock:
         if _stop_event is not None:
             _stop_event.set()
+    return JSONResponse({"ok": True})
+
+
+@app.post("/api/step")
+async def step_run(request: Request) -> JSONResponse:
+    payload = await request.json()
+    cfg = _run_payload(payload)
+    signature = _step_signature(cfg)
+
+    with _step_lock:
+        global _step_session, _latest, _history
+        with _lock:
+            if _thread is not None and _thread.is_alive():
+                raise HTTPException(status_code=409, detail="stop the active run before using step mode")
+        new_session = _step_session is None or _step_session.signature != signature
+        if new_session:
+            _step_session = _make_step_session(cfg)
+            with _lock:
+                _latest = None
+                _history = []
+        latest = _step_session.step()
+
+    _on_snapshot(latest)
+    with _lock:
+        history = _history[-300:]
+    return JSONResponse(
+        {
+            "ok": True,
+            "new_session": new_session,
+            "latest": latest,
+            "history": history,
+            "run_dir": latest.get("run_dir"),
+            "artifacts": _artifact_manifest(Path(str(latest.get("run_dir")))),
+            "complete": not bool(latest.get("running")),
+        }
+    )
+
+
+@app.post("/api/step/reset")
+def reset_step_run() -> JSONResponse:
+    with _step_lock:
+        global _step_session, _latest, _history
+        _step_session = None
+        with _lock:
+            _latest = None
+            _history = []
     return JSONResponse({"ok": True})
 
 

@@ -7,6 +7,7 @@ from fastapi import HTTPException
 
 from qubic_lab.web import analyze, artifacts, model_timeline, models, play_new, run, run_defaults, runs
 from qubic_lab.web import selfplay_generate
+from qubic_lab.web import reset_step_run, step_run
 
 
 class JsonRequest:
@@ -135,3 +136,28 @@ def test_selfplay_generate_endpoint_writes_dataset_manifest(tmp_path: Path, monk
     assert manifest["dataset"] == "dataset.jsonl"
     assert "offline imitation/RL dataset" in manifest["notes"][1]
     assert (Path(manifest["run_dir"]) / "dataset.jsonl").exists()
+
+
+def test_step_run_advances_same_tabular_session(tmp_path: Path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    reset_step_run()
+    payload = {
+        "method": "q_learning",
+        "size": 3,
+        "episodes": 3,
+        "log_every": 1,
+        "seed": 11,
+    }
+
+    first = _json(asyncio.run(step_run(JsonRequest(payload))))
+    second = _json(asyncio.run(step_run(JsonRequest(payload))))
+
+    assert first["new_session"] is True
+    assert second["new_session"] is False
+    assert first["latest"]["episode"] == 1
+    assert second["latest"]["episode"] == 2
+    assert len(second["history"]) == 2
+    run_dir = Path(second["run_dir"])
+    assert (run_dir / "metrics.jsonl").exists()
+    assert (run_dir / "q_table.npz").exists()
+    assert second["artifacts"]
