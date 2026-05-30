@@ -412,9 +412,9 @@ label {
   border: 1px solid var(--line);
   padding: 4px 8px;
 }
-.heatmap-legend .neg { background: rgba(208,106,88,.48); color: var(--ink); }
-.heatmap-legend .zero { background: rgba(240,234,220,.08); }
-.heatmap-legend .pos { background: rgba(98,176,141,.48); color: var(--ink); }
+.heatmap-legend .low { background: rgb(22,25,33); }
+.heatmap-legend .mid { background: rgb(76,118,158); color: var(--ink); }
+.heatmap-legend .high { background: rgb(213,164,71); color: #111318; }
 
 .policy-table {
   width: 100%;

@@ -457,7 +457,7 @@ function heatmapStats(heatmap) {
   if (!values.length) return { min: -1, max: 1, maxAbs: 1 };
   const min = Math.min(...values);
   const max = Math.max(...values);
-  return { min, max, maxAbs: Math.max(1e-6, Math.abs(min), Math.abs(max)) };
+  return { min, max, maxAbs: Math.max(1e-6, Math.abs(min), Math.abs(max)), span: Math.max(1e-6, max - min) };
 }
 
 function heatmapAt(heatmap, x, y, z) {
@@ -477,14 +477,35 @@ function policyRankMap(snapshot, limit = 12) {
   return new Map(top.map((m, index) => [`${m.x}-${m.y}-${m.z}`, { ...m, rank: index + 1 }]));
 }
 
-function cellTone(value, maxAbs) {
-  const t = Math.max(-1, Math.min(1, value / Math.max(maxAbs, 1e-6)));
-  if (t >= 0) {
-    const a = 0.18 + 0.68 * t;
-    return `rgba(98,176,141,${a})`;
+function mixRgb(a, b, t) {
+  const u = Math.max(0, Math.min(1, t));
+  return a.map((value, index) => Math.round(value + (b[index] - value) * u));
+}
+
+function rgb(values) {
+  return `rgb(${values[0]},${values[1]},${values[2]})`;
+}
+
+function cellTone(value, stats) {
+  const neutral = [21, 24, 32];
+  if (!Number.isFinite(value)) return rgb(neutral);
+  if (stats.min < 0 && stats.max > 0) {
+    const t = Math.min(1, Math.abs(value) / Math.max(stats.maxAbs, 1e-6));
+    if (t < 0.03) return 'rgb(24,28,36)';
+    const color = value >= 0 ? [98, 176, 141] : [208, 106, 88];
+    return rgb(mixRgb(neutral, color, 0.22 + 0.78 * Math.sqrt(t)));
   }
-  const a = 0.18 + 0.68 * -t;
-  return `rgba(208,106,88,${a})`;
+  const raw = (value - stats.min) / Math.max(stats.span, 1e-6);
+  const t = Math.pow(Math.max(0, Math.min(1, raw)), 0.55);
+  if (t < 0.04) return 'rgb(22,25,33)';
+  if (t < 0.5) return rgb(mixRgb(neutral, [76, 118, 158], t / 0.5));
+  if (t < 0.86) return rgb(mixRgb([76, 118, 158], [98, 176, 141], (t - 0.5) / 0.36));
+  return rgb(mixRgb([98, 176, 141], [213, 164, 71], (t - 0.86) / 0.14));
+}
+
+function cellIntensity(value, stats) {
+  if (stats.min < 0 && stats.max > 0) return Math.min(1, Math.abs(value) / Math.max(stats.maxAbs, 1e-6));
+  return Math.max(0, Math.min(1, (value - stats.min) / Math.max(stats.span, 1e-6)));
 }
 
 function ValueHeatmap({ snapshot, previous }) {
@@ -518,7 +539,7 @@ function ValueHeatmap({ snapshot, previous }) {
                     <div
                       className={isTop ? 'heat-cell top-cell' : 'heat-cell'}
                       key={`${x}-${y}-${z}`}
-                      style={{ background: cellTone(current, stats.maxAbs) }}
+                      style={{ background: cellTone(current, stats) }}
                     >
                       <b>{fixed(current, Math.abs(current) < 0.01 ? 4 : 3)}</b>
                       {policyMove && <em>#{policyMove.rank} {fixed(policyMove.prob ?? policyMove.value, 2)}</em>}
@@ -532,9 +553,9 @@ function ValueHeatmap({ snapshot, previous }) {
         ))}
       </div>
       <div className="heatmap-legend">
-        <span className="neg">negative</span>
-        <span className="zero">0</span>
-        <span className="pos">positive</span>
+        <span className="low">low {fixed(stats.min, 3)}</span>
+        <span className="mid">mid {fixed((stats.min + stats.max) / 2, 3)}</span>
+        <span className="high">high {fixed(stats.max, 3)}</span>
       </div>
     </div>
   );
@@ -566,7 +587,7 @@ function LayerStackView({ snapshot }) {
                       className={ranked ? 'stack-cell stack-top' : 'stack-cell'}
                       key={`${x}-${y}-${z}`}
                       title={`(${x}, ${y}, ${z}) value ${fixed(current, 4)}`}
-                      style={{ background: cellTone(current, stats.maxAbs) }}
+                      style={{ background: cellTone(current, stats) }}
                     >
                       <span>{fixed(current, size <= 3 ? 2 : 1)}</span>
                       {ranked && <b>{ranked.rank}</b>}
@@ -849,7 +870,7 @@ function drawLabBoard(ctx, canvas, snapshot, view) {
 
   const size = snapshot.heatmap.length;
   const points = flattenHeatmap(snapshot.heatmap);
-  const maxAbs = Math.max(1e-4, ...points.map((p) => Math.abs(p.value)));
+  const stats = heatmapStats(snapshot.heatmap);
   const scale = Math.min(w, h) / (size <= 3 ? 4.15 : 5.1);
   const cx = w * 0.5;
   const cy = h * 0.54;
@@ -880,9 +901,9 @@ function drawLabBoard(ctx, canvas, snapshot, view) {
   for (const p of tiles) {
     const idx = moveIndex(p.x, p.y, p.z, size);
     const occ = occupied.get(idx);
-    const norm = p.value / maxAbs;
+    const intensity = cellIntensity(p.value, stats);
     const ranked = policy.get(`${p.x}-${p.y}-${p.z}`);
-    const fill = occ === 1 ? 'rgba(98,176,141,.92)' : occ === -1 ? 'rgba(208,106,88,.92)' : valueColor(norm, topRanks.has(idx) ? 0.9 : 0.58);
+    const fill = occ === 1 ? 'rgba(98,176,141,.92)' : occ === -1 ? 'rgba(208,106,88,.92)' : cellTone(p.value, stats);
     const stroke = idx === topMove ? '#d5a447' : ranked ? 'rgba(213,164,71,.72)' : 'rgba(240,234,220,.32)';
     drawProjectedTile(ctx, p.corners, fill, stroke, idx === topMove ? 3.4 : ranked ? 2.2 : 1.05);
 
@@ -893,7 +914,7 @@ function drawLabBoard(ctx, canvas, snapshot, view) {
       ctx.font = 'bold 24px Georgia, serif';
       ctx.fillText(occ === 1 ? 'X' : 'O', p.screen.x, p.screen.y);
     } else if (size <= 4) {
-      ctx.fillStyle = Math.abs(norm) > 0.55 ? '#111318' : '#f0eadc';
+      ctx.fillStyle = intensity > 0.72 ? '#111318' : '#f0eadc';
       ctx.font = '700 12px ui-monospace, SFMono-Regular, Menlo, monospace';
       ctx.fillText(fixed(p.value, size <= 3 ? 2 : 1), p.screen.x, p.screen.y + (ranked ? 8 : 0));
     }
@@ -1060,15 +1081,31 @@ function MetricsChart({ history }) {
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
-    drawMetrics(canvas.getContext('2d'), canvas, history || []);
+    const render = () => {
+      const rect = canvas.getBoundingClientRect();
+      const width = Math.max(640, Math.round(rect.width || 960));
+      const height = Math.max(360, Math.round(rect.height || 512));
+      const dpr = Math.max(1, window.devicePixelRatio || 1);
+      canvas.width = Math.round(width * dpr);
+      canvas.height = Math.round(height * dpr);
+      const ctx = canvas.getContext('2d');
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      drawMetrics(ctx, { width, height }, history || []);
+    };
+    render();
+    const observer = new ResizeObserver(render);
+    observer.observe(canvas);
+    return () => observer.disconnect();
   }, [history]);
-  return <canvas ref={canvasRef} className="chart" width="1200" height="640" />;
+  return <canvas ref={canvasRef} className="chart" />;
 }
 
 function drawMetrics(ctx, canvas, history) {
-  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  const w = canvas.width;
+  const h = canvas.height;
+  ctx.clearRect(0, 0, w, h);
   ctx.fillStyle = '#111318';
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.fillRect(0, 0, w, h);
   if (history.length < 2) {
     ctx.fillStyle = '#a9a192';
     ctx.font = '17px Georgia, serif';
@@ -1078,46 +1115,76 @@ function drawMetrics(ctx, canvas, history) {
   const xs = history.map((d) => d.episode || d.step || 0);
   const minX = Math.min(...xs);
   const maxX = Math.max(...xs);
-  const margin = { left: 78, right: 34, top: 34, bottom: 48 };
-  const gap = 34;
-  const panelH = (canvas.height - margin.top - margin.bottom - gap * 2) / 3;
-  const panelW = canvas.width - margin.left - margin.right;
+  const values = (getY) => history.map((d) => Number(getY(d))).filter((v) => Number.isFinite(v));
+  const range = (items, fallbackMin, fallbackMax) => {
+    if (!items.length) return [fallbackMin, fallbackMax];
+    const min = Math.min(...items, fallbackMin);
+    const max = Math.max(...items, fallbackMax);
+    const pad = Math.max(0.02, (max - min) * 0.12);
+    return [min - pad, max + pad];
+  };
+  const valueItems = [...values((d) => d.value ?? d.mean_value), ...values((d) => Math.abs(Number(d.mean_abs_update || 0)))];
+  const policyItems = [...values((d) => d.entropy), ...values((d) => d.approx_kl)];
+  const margin = { left: 64, right: 22, top: 22, bottom: 36 };
+  const gap = 24;
+  const panelH = (h - margin.top - margin.bottom - gap * 2) / 3;
+  const panelW = w - margin.left - margin.right;
+  const [valueMin, valueMax] = range(valueItems, -0.05, 0.05);
+  const [, policyMax] = range(policyItems, 0, 0.05);
   const panels = [
-    { x: margin.left, y: margin.top, w: panelW, h: panelH, title: 'Outcome rates', ymin: 0, ymax: 1 },
-    { x: margin.left, y: margin.top + panelH + gap, w: panelW, h: panelH, title: 'Value and update magnitude', ymin: -1, ymax: 1 },
-    { x: margin.left, y: margin.top + (panelH + gap) * 2, w: panelW, h: panelH, title: 'Policy statistics', ymin: 0, ymax: Math.max(0.05, ...history.map((d) => Number(d.entropy || 0)), ...history.map((d) => Number(d.approx_kl || 0))) },
+    { x: margin.left, y: margin.top, w: panelW, h: panelH, title: 'outcomes', ymin: 0, ymax: 1 },
+    { x: margin.left, y: margin.top + panelH + gap, w: panelW, h: panelH, title: 'value/update', ymin: valueMin, ymax: valueMax },
+    { x: margin.left, y: margin.top + (panelH + gap) * 2, w: panelW, h: panelH, title: 'policy stats', ymin: 0, ymax: policyMax },
   ];
-  for (const p of panels) axes(ctx, p);
-  series(ctx, panels[0], history, minX, maxX, (d) => d.recent?.x_win_rate, '#62b08d');
-  series(ctx, panels[0], history, minX, maxX, (d) => d.recent?.o_win_rate, '#d06a58');
-  series(ctx, panels[0], history, minX, maxX, (d) => d.recent?.draw_rate, '#76a8cf');
-  series(ctx, panels[1], history, minX, maxX, (d) => d.value ?? d.mean_value, '#7db5d7');
-  series(ctx, panels[1], history, minX, maxX, (d) => Math.abs(Number(d.mean_abs_update || 0)), '#d5a447');
-  series(ctx, panels[2], history, minX, maxX, (d) => Number(d.entropy || 0), '#b79adb');
-  series(ctx, panels[2], history, minX, maxX, (d) => Number(d.approx_kl || 0), '#8cc8d4');
+  const defs = [
+    [
+      { label: 'X', color: '#62b08d', get: (d) => d.recent?.x_win_rate },
+      { label: 'O', color: '#d06a58', get: (d) => d.recent?.o_win_rate },
+      { label: 'D', color: '#76a8cf', get: (d) => d.recent?.draw_rate },
+    ],
+    [
+      { label: 'V', color: '#7db5d7', get: (d) => d.value ?? d.mean_value },
+      { label: '|dQ|', color: '#d5a447', get: (d) => Math.abs(Number(d.mean_abs_update || 0)) },
+    ],
+    [
+      { label: 'H', color: '#b79adb', get: (d) => Number(d.entropy || 0) },
+      { label: 'KL', color: '#8cc8d4', get: (d) => Number(d.approx_kl || 0) },
+    ],
+  ];
+  panels.forEach((panel, index) => {
+    axes(ctx, panel, minX, maxX);
+    defs[index].forEach((item) => series(ctx, panel, history, minX, maxX, item.get, item.color));
+    legend(ctx, panel, history, defs[index]);
+  });
 }
 
-function axes(ctx, p) {
+function axes(ctx, p, minX, maxX) {
   ctx.fillStyle = '#151820';
   ctx.fillRect(p.x, p.y, p.w, p.h);
-  ctx.strokeStyle = '#3f4550';
+  ctx.strokeStyle = '#48505c';
+  ctx.lineWidth = 1;
   ctx.strokeRect(p.x, p.y, p.w, p.h);
   ctx.fillStyle = '#f0eadc';
-  ctx.font = '16px Georgia, serif';
-  ctx.fillText(p.title, p.x + 12, p.y + 22);
+  ctx.font = '700 11px ui-monospace, SFMono-Regular, Menlo, monospace';
+  ctx.fillText(p.title.toUpperCase(), p.x + 10, p.y + 17);
   ctx.fillStyle = '#a9a192';
-  ctx.font = '12px ui-monospace, SFMono-Regular, Menlo, monospace';
+  ctx.font = '11px ui-monospace, SFMono-Regular, Menlo, monospace';
   for (let i = 0; i <= 4; i += 1) {
     const frac = i / 4;
     const y = p.y + p.h - frac * p.h;
     const v = p.ymin + frac * (p.ymax - p.ymin);
-    ctx.strokeStyle = '#282d36';
+    ctx.strokeStyle = i === 0 ? '#3b424d' : '#272d36';
     ctx.beginPath();
     ctx.moveTo(p.x, y);
     ctx.lineTo(p.x + p.w, y);
     ctx.stroke();
-    ctx.fillText(v.toFixed(2), p.x - 48, y + 4);
+    ctx.fillText(v.toFixed(2), p.x - 52, y + 4);
   }
+  ctx.fillStyle = '#756f66';
+  ctx.fillText(String(minX), p.x, p.y + p.h + 16);
+  ctx.textAlign = 'right';
+  ctx.fillText(String(maxX), p.x + p.w, p.y + p.h + 16);
+  ctx.textAlign = 'left';
 }
 
 function series(ctx, p, history, minX, maxX, getY, color) {
@@ -1126,15 +1193,39 @@ function series(ctx, p, history, minX, maxX, getY, color) {
     .filter((d) => Number.isFinite(d.y));
   if (values.length < 2) return;
   ctx.strokeStyle = color;
-  ctx.lineWidth = 2.6;
+  ctx.lineWidth = 2.2;
+  ctx.lineJoin = 'round';
+  ctx.lineCap = 'round';
   ctx.beginPath();
   values.forEach((d, i) => {
     const x = p.x + ((d.x - minX) / Math.max(1, maxX - minX)) * p.w;
-    const y = p.y + p.h - ((d.y - p.ymin) / Math.max(1e-9, p.ymax - p.ymin)) * p.h;
+    const norm = (d.y - p.ymin) / Math.max(1e-9, p.ymax - p.ymin);
+    const y = p.y + p.h - Math.max(0, Math.min(1, norm)) * p.h;
     if (i === 0) ctx.moveTo(x, y);
     else ctx.lineTo(x, y);
   });
   ctx.stroke();
+  const last = values[values.length - 1];
+  const x = p.x + ((last.x - minX) / Math.max(1, maxX - minX)) * p.w;
+  const y = p.y + p.h - Math.max(0, Math.min(1, (last.y - p.ymin) / Math.max(1e-9, p.ymax - p.ymin))) * p.h;
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  ctx.arc(x, y, 3.2, 0, Math.PI * 2);
+  ctx.fill();
+}
+
+function legend(ctx, p, history, items) {
+  let x = p.x + p.w - 8;
+  ctx.textAlign = 'right';
+  ctx.font = '700 11px ui-monospace, SFMono-Regular, Menlo, monospace';
+  items.slice().reverse().forEach((item) => {
+    const values = history.map((d) => Number(item.get(d))).filter((v) => Number.isFinite(v));
+    const text = `${item.label} ${values.length ? fixed(values[values.length - 1], 3) : '--'}`;
+    ctx.fillStyle = item.color;
+    ctx.fillText(text, x, p.y + 17);
+    x -= ctx.measureText(text).width + 14;
+  });
+  ctx.textAlign = 'left';
 }
 
 function RunSummary({ latest, analysis }) {
