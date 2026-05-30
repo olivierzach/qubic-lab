@@ -4,7 +4,7 @@ import json
 import random
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -106,6 +106,9 @@ class LoadedModel:
             probs[move] = 1.0
             return probs, float(np.tanh(score / 8.0))
 
+        if self.record.kind == "mcts":
+            return mcts_policy(state, simulations=64, rng=random.Random(0))
+
         if self.record.kind == "tabular":
             row = self._load_q().get(state_key(state), np.zeros(n, dtype=np.float32))
             masked = np.full(n, -np.inf, dtype=np.float32)
@@ -128,6 +131,8 @@ class LoadedModel:
     def choose_move(self, state: State, rng: random.Random, *, greedy: bool = True) -> int:
         if self.record.kind == "tactical":
             return tactical_move(state, rng)[0]
+        if self.record.kind == "mcts":
+            return mcts_move(state, rng=rng, simulations=64)
 
         probs, _ = self.policy_value(state)
         moves = legal_moves(state).astype(int)
@@ -210,10 +215,113 @@ def tactical_move(state: State, rng: random.Random) -> tuple[int, float]:
     return int(rng.choice(best_moves)), float(best)
 
 
+@dataclass
+class SearchNode:
+    state: State
+    parent: "SearchNode | None" = None
+    move: int | None = None
+    untried: list[int] = field(default_factory=list)
+    children: dict[int, "SearchNode"] = field(default_factory=dict)
+    visits: int = 0
+    value_sum: float = 0.0
+
+
+def _rollout_value(state: State, root_player: int, rng: random.Random) -> float:
+    cursor = state
+    while True:
+        done, winner = terminal(cursor)
+        if done:
+            if winner == 0 or winner is None:
+                return 0.0
+            return 1.0 if winner == root_player else -1.0
+        moves = legal_moves(cursor).astype(int).tolist()
+        cursor = apply_move(cursor, int(rng.choice(moves)))
+
+
+def _ucb_child(node: SearchNode, exploration: float) -> SearchNode:
+    log_parent = np.log(max(1, node.visits))
+
+    def score(child: SearchNode) -> float:
+        if child.visits == 0:
+            return float("inf")
+        mean = child.value_sum / child.visits
+        return float(mean + exploration * np.sqrt(log_parent / child.visits))
+
+    return max(node.children.values(), key=score)
+
+
+def mcts_policy(
+    state: State,
+    *,
+    simulations: int = 64,
+    exploration: float = 1.4,
+    rng: random.Random | None = None,
+) -> tuple[np.ndarray, float]:
+    rng = rng or random.Random(0)
+    moves = legal_moves(state).astype(int).tolist()
+    n = state.size**3
+    probs = np.zeros(n, dtype=np.float32)
+    if not moves:
+        return probs, 0.0
+
+    root_player = int(state.player)
+    root = SearchNode(state=state, untried=moves.copy())
+    for _ in range(max(1, int(simulations))):
+        node = root
+        while not node.untried and node.children:
+            node = _ucb_child(node, exploration)
+
+        done, _ = terminal(node.state)
+        if node.untried and not done:
+            move = int(rng.choice(node.untried))
+            node.untried.remove(move)
+            next_state = apply_move(node.state, move)
+            child = SearchNode(
+                state=next_state,
+                parent=node,
+                move=move,
+                untried=legal_moves(next_state).astype(int).tolist(),
+            )
+            node.children[move] = child
+            node = child
+
+        value = _rollout_value(node.state, root_player, rng)
+        while node is not None:
+            node.visits += 1
+            node.value_sum += value
+            node = node.parent
+
+    total_child_visits = sum(child.visits for child in root.children.values())
+    if total_child_visits:
+        for move, child in root.children.items():
+            probs[move] = child.visits / total_child_visits
+    else:
+        probs[moves] = 1.0 / len(moves)
+    value = root.value_sum / max(1, root.visits)
+    return probs, float(value)
+
+
+def mcts_move(
+    state: State,
+    *,
+    rng: random.Random,
+    simulations: int = 64,
+    exploration: float = 1.4,
+) -> int:
+    probs, _ = mcts_policy(state, simulations=simulations, exploration=exploration, rng=rng)
+    moves = legal_moves(state).astype(int)
+    legal_probs = probs[moves]
+    if float(legal_probs.sum()) <= 0:
+        return int(rng.choice(moves.tolist()))
+    best = moves[np.flatnonzero(legal_probs == np.max(legal_probs))]
+    return int(rng.choice(best.tolist()))
+
+
 def list_models(root: Path = Path("runs")) -> list[ModelRecord]:
     builtins = [
         ModelRecord(id="random", kind="random", label="Random baseline", run_dir=None, size=3, method="random"),
         ModelRecord(id="tactical", kind="tactical", label="Tactical baseline", run_dir=None, size=3, method="tactical"),
+        ModelRecord(id="mcts", kind="mcts", label="MCTS baseline", run_dir=None, size=3, method="mcts"),
     ]
     records = []
     for latest_path in root.rglob("latest.json"):

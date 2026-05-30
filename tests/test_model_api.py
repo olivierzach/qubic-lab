@@ -13,6 +13,15 @@ def test_analyze_random_empty_board():
     assert result["heatmap"][0][0][0] > 0
 
 
+def test_analyze_mcts_empty_board():
+    result = analyze_position("mcts", State.new(3))
+
+    assert result["model"]["kind"] == "mcts"
+    assert len(result["legal_moves"]) == 27
+    assert len(result["top_moves"]) == 10
+    assert sum(move["prob"] for move in result["top_moves"]) > 0
+
+
 def test_tactical_baseline_takes_immediate_win():
     board = np.zeros((3, 3, 3), dtype=np.int8)
     for move in [0, 1]:
@@ -57,6 +66,13 @@ def test_tournament_against_tactical_smoke():
 
     assert result["matches"]
     assert result["matches"][0]["wins"]["tactical"] >= 0
+
+
+def test_tournament_against_mcts_smoke():
+    result = run_tournament(["random", "mcts"], size=3, games=1, seed=0)
+
+    assert result["matches"]
+    assert "mcts" in result["matches"][0]["wins"]
 
 
 def test_board_layers_shape():

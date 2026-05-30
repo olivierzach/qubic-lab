@@ -14,7 +14,7 @@ from torch import nn
 
 from qubic_lab.artifacts import load_metrics, write_plot_artifacts
 from qubic_lab.game import State, apply_move, terminal
-from qubic_lab.model_api import load_model
+from qubic_lab.model_api import load_model, mcts_move
 from qubic_lab.neural import (
     PolicyStep,
     PolicyValueNet,
@@ -45,7 +45,10 @@ class DeepRLConfig:
     value_coef: float = 0.5
     max_grad_norm: float = 1.0
     temperature: float = 1.0
+    advantage_mode: str = "gae"
+    gae_lambda: float = 0.95
     opponent_mix: str = "self"
+    mcts_simulations: int = 64
     side_mode: str = "balanced"
     o_target_win_rate: float = 0.5
     o_reward_weight: float = 1.0
@@ -66,6 +69,74 @@ def _episode_returns(steps: list[PolicyStep], winner: int | None, gamma: float, 
             ret = reward_weight * sign * (gamma ** (horizon - i))
         returns.append(ret)
     return np.asarray(returns, dtype=np.float32)
+
+
+def _terminal_reward(player: int, winner: int | None, reward_weight: float) -> float:
+    if winner is None or winner == 0:
+        return 0.0
+    return reward_weight if int(player) == int(winner) else -reward_weight
+
+
+def _gae_returns(
+    steps: list[PolicyStep],
+    winner: int | None,
+    gamma: float,
+    gae_lambda: float,
+    reward_weight: float = 1.0,
+) -> np.ndarray:
+    if not steps:
+        return np.asarray([], dtype=np.float32)
+    values = np.asarray([step.value for step in steps], dtype=np.float32)
+    advantages = np.zeros(len(steps), dtype=np.float32)
+    next_advantage = 0.0
+    lam = float(np.clip(gae_lambda, 0.0, 1.0))
+
+    for idx in range(len(steps) - 1, -1, -1):
+        terminal_step = idx == len(steps) - 1
+        reward = _terminal_reward(steps[idx].player, winner, reward_weight) if terminal_step else 0.0
+        if terminal_step:
+            continuation = 0.0
+            perspective = 0.0
+        else:
+            perspective = 1.0 if steps[idx + 1].player == steps[idx].player else -1.0
+            continuation = perspective * values[idx + 1]
+        delta = reward + gamma * continuation - values[idx]
+        advantages[idx] = delta + gamma * lam * perspective * next_advantage
+        next_advantage = float(advantages[idx])
+
+    return (advantages + values).astype(np.float32)
+
+
+def _episode_targets(
+    steps: list[PolicyStep],
+    winner: int | None,
+    cfg: DeepRLConfig,
+    reward_weight: float = 1.0,
+) -> np.ndarray:
+    mode = cfg.advantage_mode.strip().lower().replace("-", "_")
+    if mode in {"mc", "monte_carlo", "terminal"}:
+        return _episode_returns(steps, winner, cfg.gamma, reward_weight)
+    if mode in {"gae", "td", "td_lambda", "lambda"}:
+        return _gae_returns(steps, winner, cfg.gamma, cfg.gae_lambda, reward_weight)
+    raise ValueError(f"unknown advantage_mode {cfg.advantage_mode!r}")
+
+
+def _patch_steps(steps: list[PolicyStep], targets: np.ndarray) -> list[PolicyStep]:
+    patched = []
+    for step, target in zip(steps, targets):
+        patched.append(
+            PolicyStep(
+                obs=step.obs,
+                action=step.action,
+                reward=float(target),
+                done=step.done,
+                logp=step.logp,
+                value=step.value,
+                mask=step.mask,
+                player=step.player,
+            )
+        )
+    return patched
 
 
 def _parse_opponent_mix(mix: str) -> list[tuple[str, float]]:
@@ -98,6 +169,8 @@ def _opponent_move(opponent_id: str, model: PolicyValueNet, state: State, rng: n
         action, *_ = select_action(model, state, rng, temperature=cfg.temperature, device=cfg.device)
         return int(action)
     py_rng = random.Random(int(rng.integers(0, 2**31 - 1)))
+    if opponent_id == "mcts":
+        return mcts_move(state, rng=py_rng, simulations=cfg.mcts_simulations)
     return load_model(opponent_id).choose_move(state, py_rng, greedy=True)
 
 
@@ -146,21 +219,8 @@ def play_episode(
             state = apply_move(state, action)
             done, winner = terminal(state)
             if done:
-                returns = _episode_returns(steps, winner, cfg.gamma, reward_weight)
-                patched = []
-                for step, ret in zip(steps, returns):
-                    patched.append(
-                        PolicyStep(
-                            obs=step.obs,
-                            action=step.action,
-                            reward=float(ret),
-                            done=True,
-                            logp=step.logp,
-                            value=step.value,
-                            mask=step.mask,
-                            player=step.player,
-                        )
-                    )
+                returns = _episode_targets(steps, winner, cfg, reward_weight)
+                patched = _patch_steps(steps, returns)
                 outcome = int(winner or 0)
                 return patched, outcome, _episode_info(opponent_id, learner_player, outcome, reward_weight)
             continue
@@ -181,21 +241,8 @@ def play_episode(
             )
         )
         if done:
-            returns = _episode_returns(steps, winner, cfg.gamma, reward_weight)
-            patched = []
-            for step, ret in zip(steps, returns):
-                patched.append(
-                    PolicyStep(
-                        obs=step.obs,
-                        action=step.action,
-                        reward=float(ret),
-                        done=step.done,
-                        logp=step.logp,
-                        value=step.value,
-                        mask=step.mask,
-                        player=step.player,
-                    )
-                )
+            returns = _episode_targets(steps, winner, cfg, reward_weight)
+            patched = _patch_steps(steps, returns)
             outcome = int(winner or 0)
             return patched, outcome, _episode_info(opponent_id, learner_player, outcome, reward_weight)
         state = next_state

@@ -23,6 +23,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--entropy-coef", type=float, default=0.02)
     parser.add_argument("--value-coef", type=float, default=0.5)
     parser.add_argument("--temperature", type=float, default=1.0)
+    parser.add_argument("--advantage-mode", choices=["gae", "mc"], default="gae")
+    parser.add_argument("--gae-lambda", type=float, default=0.95)
+    parser.add_argument("--opponent-mix", default="self")
+    parser.add_argument("--mcts-simulations", type=int, default=64)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--log-every", type=int, default=100)
     parser.add_argument("--run-dir", default=None)
@@ -47,6 +51,10 @@ def main() -> None:
         entropy_coef=args.entropy_coef,
         value_coef=args.value_coef,
         temperature=args.temperature,
+        advantage_mode=args.advantage_mode,
+        gae_lambda=args.gae_lambda,
+        opponent_mix=args.opponent_mix,
+        mcts_simulations=args.mcts_simulations,
         seed=args.seed,
         log_every=args.log_every,
         run_dir=args.run_dir,
