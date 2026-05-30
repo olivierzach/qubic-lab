@@ -238,7 +238,6 @@ function LabApp() {
       setSourceMode('live');
       setRunData({ latest: data.latest, history: data.history || [] });
       setArtifacts(data.artifacts || []);
-      setNotice(`Stepped to episode ${data.latest?.episode || 0}`);
       await loadRuns();
     } catch (err) {
       setError(String(err));
@@ -254,7 +253,7 @@ function LabApp() {
       await api('/api/step/reset', { method: 'POST' });
       setRunData({ latest: null, history: [] });
       setArtifacts([]);
-      setNotice('Step session reset');
+      setNotice('');
     } catch (err) {
       setError(String(err));
     } finally {
