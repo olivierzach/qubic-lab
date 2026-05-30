@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 from fastapi import HTTPException
 
-from qubic_lab.web import analyze, model_timeline, models, play_new, run, run_defaults, runs
+from qubic_lab.web import analyze, artifacts, model_timeline, models, play_new, run, run_defaults, runs
 from qubic_lab.web import selfplay_generate
 
 
@@ -34,6 +34,8 @@ def _write_run(root: Path, name: str = "demo") -> Path:
     metadata = {"created_at": "2026-05-29T12:00:00Z", "method": "q_learning"}
     (run_dir / "latest.json").write_text(json.dumps(latest) + "\n")
     (run_dir / "metadata.json").write_text(json.dumps(metadata) + "\n")
+    (run_dir / "analysis.json").write_text("{}\n")
+    (run_dir / "curves.png").write_bytes(b"png")
     metrics = [{"episode": idx, "x_win_rate": idx / 1000} for idx in range(505)]
     (run_dir / "metrics.jsonl").write_text("\n".join(json.dumps(row) for row in metrics) + "\n")
     return run_dir
@@ -54,6 +56,11 @@ def test_runs_api_lists_metadata_and_inspects_recent_history(tmp_path: Path, mon
     assert len(body["history"]) == 500
     assert body["history"][0]["episode"] == 5
     assert body["history"][-1]["episode"] == 504
+    assert {item["file"] for item in body["artifacts"]} >= {"analysis.json", "curves.png"}
+
+    artifact_body = _json(artifacts(str(run_dir)))
+    assert artifact_body["run_dir"] == str(run_dir)
+    assert artifact_body["artifacts"]
 
 
 def test_run_defaults_and_model_timeline_are_frontend_ready(tmp_path: Path, monkeypatch):
@@ -74,6 +81,7 @@ def test_run_defaults_and_model_timeline_are_frontend_ready(tmp_path: Path, monk
     assert timeline["config"]["method"] == "q_learning"
     assert len(timeline["snapshots"]) == 500
     assert timeline["snapshots"][0]["episode"] == 5
+    assert {item["file"] for item in timeline["artifacts"]} >= {"analysis.json", "curves.png"}
 
 
 def test_run_api_rejects_paths_outside_runs(tmp_path: Path, monkeypatch):

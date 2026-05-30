@@ -287,6 +287,76 @@ label {
 .board3d.compact { aspect-ratio: 7 / 3; }
 .chart { aspect-ratio: 16 / 7; }
 
+.value-heatmap {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+.value-heatmap.empty {
+  border: 1px solid var(--line);
+  color: var(--muted);
+  padding: 12px;
+}
+.heatmap-meta, .heatmap-legend {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  color: var(--muted);
+  font: 12px ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.layer-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 10px;
+}
+.layer-panel {
+  border: 1px solid var(--line);
+  background: rgba(15, 17, 21, .62);
+}
+.layer-panel header {
+  border-bottom: 1px solid var(--line);
+  color: var(--muted);
+  padding: 6px 8px;
+  font: 12px ui-monospace, SFMono-Regular, Menlo, monospace;
+  text-transform: uppercase;
+}
+.cells {
+  display: grid;
+  gap: 1px;
+  background: var(--line);
+  padding: 1px;
+}
+.heat-cell {
+  min-height: 54px;
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: 4px;
+  color: var(--ink);
+  outline: 1px solid rgba(240, 234, 220, .04);
+}
+.heat-cell b {
+  font: 700 13px ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.heat-cell small {
+  color: rgba(240, 234, 220, .72);
+  font: 10px ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.top-cell {
+  outline: 2px solid var(--gold);
+  outline-offset: -2px;
+}
+.heatmap-legend {
+  align-items: center;
+}
+.heatmap-legend span {
+  border: 1px solid var(--line);
+  padding: 4px 8px;
+}
+.heatmap-legend .neg { background: rgba(208,106,88,.48); color: var(--ink); }
+.heatmap-legend .zero { background: rgba(240,234,220,.08); }
+.heatmap-legend .pos { background: rgba(98,176,141,.48); color: var(--ink); }
+
 .policy-table {
   width: 100%;
   margin-top: 10px;
@@ -326,6 +396,16 @@ label {
 }
 .artifact-row a {
   font: 12px ui-monospace, SFMono-Regular, Menlo, monospace;
+  display: inline-grid;
+  gap: 2px;
+}
+.artifact-row a small {
+  color: var(--muted);
+}
+.artifact-row p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
 }
 
 .play-grid {

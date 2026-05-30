@@ -5,6 +5,7 @@ import threading
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
@@ -208,6 +209,51 @@ def _read_jsonl(path: Path) -> list[dict[str, Any]]:
     return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
 
 
+ARTIFACT_FILES = {
+    "curves.png",
+    "first_move_heatmap.png",
+    "curves.svg",
+    "analysis.md",
+    "analysis.json",
+    "first_move_policy.json",
+    "model.pt",
+    "q_table.npz",
+    "config.json",
+    "metadata.json",
+    "metrics.jsonl",
+    "latest.json",
+    "artifacts.json",
+}
+
+
+def _artifact_manifest(path: Path) -> list[dict[str, Any]]:
+    files = []
+    declared_path = path / "artifacts.json"
+    declared: dict[str, str] = {}
+    if declared_path.exists():
+        try:
+            payload = json.loads(declared_path.read_text())
+            declared = {str(label): str(file) for label, file in payload.get("files", {}).items()}
+        except json.JSONDecodeError:
+            declared = {}
+
+    names = sorted(ARTIFACT_FILES | set(declared.values()))
+    for name in names:
+        artifact_path = path / name
+        if not artifact_path.exists() or not artifact_path.is_file():
+            continue
+        labels = [label for label, file in declared.items() if file == name]
+        files.append(
+            {
+                "file": name,
+                "label": labels[0] if labels else name,
+                "bytes": artifact_path.stat().st_size,
+                "url": f"/api/artifact?run_dir={quote(path.as_posix(), safe='')}&file={quote(name, safe='')}",
+            }
+        )
+    return files
+
+
 def _timeline_for_run(path: Path) -> dict[str, Any]:
     latest_path = path / "latest.json"
     latest = json.loads(latest_path.read_text()) if latest_path.exists() else None
@@ -233,6 +279,7 @@ def _timeline_for_run(path: Path) -> dict[str, Any]:
         "latest": latest,
         "snapshots": snapshots,
         "config": latest.get("config", {}) if latest else {},
+        "artifacts": _artifact_manifest(path),
     }
 
 
@@ -320,6 +367,7 @@ def runs() -> JSONResponse:
             if metadata_path.exists():
                 latest["metadata"] = json.loads(metadata_path.read_text())
                 latest["created_at"] = latest["metadata"].get("created_at")
+            latest["artifacts"] = _artifact_manifest(latest_path.parent)
             items.append(latest)
         except json.JSONDecodeError:
             continue
@@ -335,7 +383,7 @@ def run(run_dir: str) -> JSONResponse:
         raise HTTPException(status_code=404, detail="latest.json not found")
     latest = json.loads(latest_path.read_text())
     history = _read_jsonl(path / "metrics.jsonl")
-    return JSONResponse({"latest": latest, "history": history[-500:]})
+    return JSONResponse({"latest": latest, "history": history[-500:], "artifacts": _artifact_manifest(path)})
 
 
 @app.get("/api/model/timeline")
@@ -350,21 +398,18 @@ def model_timeline(model_id: str | None = None, run_dir: str | None = None) -> J
 @app.get("/api/artifact")
 def artifact(run_dir: str, file: str) -> FileResponse:
     path = _safe_run_dir(run_dir)
-    allowed = {
-        "curves.png",
-        "first_move_heatmap.png",
-        "curves.svg",
-        "analysis.md",
-        "analysis.json",
-        "first_move_policy.json",
-        "model.pt",
-    }
-    if file not in allowed:
+    if file not in ARTIFACT_FILES:
         raise HTTPException(status_code=400, detail="artifact not allowed")
     artifact_path = path / file
     if not artifact_path.exists():
         raise HTTPException(status_code=404, detail="artifact not found")
     return FileResponse(artifact_path)
+
+
+@app.get("/api/artifacts")
+def artifacts(run_dir: str) -> JSONResponse:
+    path = _safe_run_dir(run_dir)
+    return JSONResponse({"run_dir": str(path), "artifacts": _artifact_manifest(path)})
 
 
 @app.get("/api/models")

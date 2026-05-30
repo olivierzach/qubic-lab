@@ -54,6 +54,12 @@ const moveCoord = (move, size) => ({
 const pct = (value) => `${Math.round((Number(value) || 0) * 100)}%`;
 const fixed = (value, places = 3) => Number(value || 0).toFixed(places);
 const methodLabel = (method) => String(method || 'run').toUpperCase();
+const formatBytes = (bytes = 0) => {
+  if (!bytes) return '';
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+};
 
 function Header({ active }) {
   return (
@@ -98,6 +104,7 @@ function LabApp() {
   const [runConfig, setRunConfig] = useState(defaults);
   const [runDefaults, setRunDefaults] = useState({});
   const [timeline, setTimeline] = useState([]);
+  const [artifacts, setArtifacts] = useState([]);
   const [snapshotIndex, setSnapshotIndex] = useState(0);
   const [analysis, setAnalysis] = useState(null);
   const [sourceMode, setSourceMode] = useState('live');
@@ -108,6 +115,7 @@ function LabApp() {
   const selected = models.find((m) => m.id === selectedModel);
   const snapshots = timeline.length ? timeline : (runData.history || []).filter((d) => d.heatmap);
   const activeSnapshot = snapshots[snapshotIndex] || runData.latest || analysis;
+  const previousSnapshot = snapshots[Math.max(0, snapshotIndex - 1)] || null;
 
   const loadRuns = async () => {
     const data = await api('/api/runs');
@@ -136,6 +144,7 @@ function LabApp() {
     setError('');
     const data = await api(`/api/run?run_dir=${encodeURIComponent(runDir)}`);
     setRunData({ latest: data.latest || data, history: data.history || [] });
+    setArtifacts(data.artifacts || data.latest?.artifacts || []);
     setSourceMode('saved');
     setSnapshotIndex(0);
   };
@@ -144,6 +153,7 @@ function LabApp() {
     if (!modelId) return;
     const data = await apiMaybe(`/api/model/timeline?model_id=${encodeURIComponent(modelId)}`, { timeline: [] });
     setTimeline(Array.isArray(data) ? data : data.timeline || data.snapshots || []);
+    if (data?.artifacts) setArtifacts(data.artifacts);
     setSnapshotIndex(0);
   };
 
@@ -166,6 +176,16 @@ function LabApp() {
   useEffect(() => {
     loadTimeline(selectedModel).catch(() => setTimeline([]));
   }, [selectedModel]);
+
+  useEffect(() => {
+    const runDir = runData.latest?.run_dir;
+    if (!runDir) {
+      setArtifacts([]);
+      return;
+    }
+    apiMaybe(`/api/artifacts?run_dir=${encodeURIComponent(runDir)}`, { artifacts: [] })
+      .then((data) => setArtifacts(data?.artifacts || runData.latest?.artifacts || []));
+  }, [runData.latest?.run_dir]);
 
   const updateConfig = (key, value) => {
     setRunConfig((current) => {
@@ -289,6 +309,7 @@ function LabApp() {
               snapshot={activeSnapshot}
               snapshots={snapshots}
               snapshotIndex={snapshotIndex}
+              previousSnapshot={previousSnapshot}
               onIndex={setSnapshotIndex}
               analysis={analysis}
             />
@@ -296,7 +317,7 @@ function LabApp() {
               <ModelCatalog models={models} selectedModel={selectedModel} onSelect={setSelectedModel} />
               <RunList runs={runs} onLoad={(runDir) => { setSelectedRun(runDir); loadRun(runDir); }} />
             </div>
-            <Artifacts latest={runData.latest} />
+            <Artifacts latest={runData.latest} artifacts={artifacts} />
           </section>
         </section>
       </main>
@@ -377,7 +398,7 @@ function SystemInputs({ config, selected, latest }) {
   );
 }
 
-function SnapshotViewer({ snapshot, snapshots, snapshotIndex, onIndex, analysis }) {
+function SnapshotViewer({ snapshot, snapshots, snapshotIndex, previousSnapshot, onIndex, analysis }) {
   const max = Math.max(0, snapshots.length - 1);
   const source = snapshot || analysis;
   return (
@@ -398,9 +419,90 @@ function SnapshotViewer({ snapshot, snapshots, snapshotIndex, onIndex, analysis 
           />
         </label>
       </div>
+      <ValueHeatmap snapshot={source} previous={previousSnapshot} />
       <Board3D analysis={source} compact />
       <PolicyTable analysis={source} />
     </section>
+  );
+}
+
+function heatmapStats(heatmap) {
+  const values = flattenHeatmap(heatmap).map((p) => p.value).filter((v) => Number.isFinite(v));
+  if (!values.length) return { min: -1, max: 1, maxAbs: 1 };
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  return { min, max, maxAbs: Math.max(1e-6, Math.abs(min), Math.abs(max)) };
+}
+
+function heatmapAt(heatmap, x, y, z) {
+  return Number(heatmap?.[z]?.[y]?.[x] || 0);
+}
+
+function heatmapTopMoves(heatmap, limit = 8) {
+  const size = heatmap?.length || 0;
+  return flattenHeatmap(heatmap)
+    .map((p) => ({ ...p, move: moveIndex(p.x, p.y, p.z, size), prob: p.value }))
+    .sort((a, b) => Math.abs(b.value) - Math.abs(a.value))
+    .slice(0, limit);
+}
+
+function cellTone(value, maxAbs) {
+  const t = Math.max(-1, Math.min(1, value / Math.max(maxAbs, 1e-6)));
+  if (t >= 0) {
+    const a = 0.18 + 0.68 * t;
+    return `rgba(98,176,141,${a})`;
+  }
+  const a = 0.18 + 0.68 * -t;
+  return `rgba(208,106,88,${a})`;
+}
+
+function ValueHeatmap({ snapshot, previous }) {
+  const heatmap = snapshot?.heatmap;
+  if (!heatmap) {
+    return <div className="value-heatmap empty">No heatmap snapshot loaded.</div>;
+  }
+  const size = heatmap.length;
+  const stats = heatmapStats(heatmap);
+  const top = heatmapTopMoves(heatmap, 6);
+  return (
+    <div className="value-heatmap">
+      <div className="heatmap-meta">
+        <span>episode {snapshot?.episode || 0}</span>
+        <span>range {fixed(stats.min, 4)} to {fixed(stats.max, 4)}</span>
+        <span>{snapshot?.method ? methodLabel(snapshot.method) : 'position'}</span>
+      </div>
+      <div className="layer-grid">
+        {heatmap.map((layer, z) => (
+          <section className="layer-panel" key={`z-${z}`}>
+            <header>z = {z}</header>
+            <div className="cells" style={{ gridTemplateColumns: `repeat(${size}, minmax(0, 1fr))` }}>
+              {layer.map((row, y) =>
+                row.map((value, x) => {
+                  const current = Number(value || 0);
+                  const delta = current - heatmapAt(previous?.heatmap, x, y, z);
+                  const isTop = top.some((m) => m.x === x && m.y === y && m.z === z);
+                  return (
+                    <div
+                      className={isTop ? 'heat-cell top-cell' : 'heat-cell'}
+                      key={`${x}-${y}-${z}`}
+                      style={{ background: cellTone(current, stats.maxAbs) }}
+                    >
+                      <b>{fixed(current, Math.abs(current) < 0.01 ? 4 : 3)}</b>
+                      <small>{delta === 0 ? '0' : `${delta > 0 ? '+' : ''}${fixed(delta, 3)}`}</small>
+                    </div>
+                  );
+                }),
+              )}
+            </div>
+          </section>
+        ))}
+      </div>
+      <div className="heatmap-legend">
+        <span className="neg">negative</span>
+        <span className="zero">0</span>
+        <span className="pos">positive</span>
+      </div>
+    </div>
   );
 }
 
@@ -823,10 +925,10 @@ function Summary({ analysis, game }) {
 }
 
 function PolicyTable({ analysis }) {
-  const top = analysis?.top_moves?.slice(0, 8) || [];
+  const top = analysis?.top_moves?.slice(0, 8) || heatmapTopMoves(analysis?.heatmap, 8);
   return (
     <table className="policy-table">
-      <thead><tr><th>rank</th><th>move</th><th>probability</th><th>value</th></tr></thead>
+      <thead><tr><th>rank</th><th>move</th><th>weight</th><th>value</th></tr></thead>
       <tbody>
         {top.map((m, index) => (
           <tr key={m.move}>
@@ -862,16 +964,20 @@ function ModelCatalog({ models, selectedModel, onSelect }) {
   );
 }
 
-function Artifacts({ latest }) {
+function Artifacts({ latest, artifacts }) {
   if (!latest?.run_dir) return null;
-  const files = ['analysis.md', 'analysis.json', 'curves.png', 'first_move_heatmap.png', 'first_move_policy.json', 'model.pt'];
+  const files = artifacts || latest.artifacts || [];
   return (
     <section className="paper-section compact-section">
       <h2>Artifacts</h2>
       <div className="artifact-row">
-        {files.map((file) => (
-          <a key={file} href={`/api/artifact?run_dir=${encodeURIComponent(latest.run_dir)}&file=${file}`} target="_blank" rel="noreferrer">{file}</a>
+        {files.map((item) => (
+          <a key={item.file} href={item.url || `/api/artifact?run_dir=${encodeURIComponent(latest.run_dir)}&file=${item.file}`} target="_blank" rel="noreferrer">
+            {item.label || item.file}
+            <small>{formatBytes(item.bytes)}</small>
+          </a>
         ))}
+        {!files.length && <p>No completed artifacts yet. They appear after a run writes analysis and plots.</p>}
       </div>
     </section>
   );
