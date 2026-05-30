@@ -1,4 +1,5 @@
 from pathlib import Path
+import json
 
 from qubic_lab.rl_tabular import TabularConfig, train_tabular
 
@@ -18,3 +19,6 @@ def test_tabular_smoke_run(tmp_path: Path):
     assert (run_dir / "curves.png").exists()
     assert (run_dir / "first_move_heatmap.png").exists()
     assert (run_dir / "first_move_policy.json").exists()
+    latest = json.loads((run_dir / "latest.json").read_text())
+    assert "value" in latest
+    assert len(latest["top_moves"]) == 10

@@ -95,6 +95,25 @@ def empty_board_heatmap(q: QTable, size: int) -> list[list[list[float]]]:
     return layers.round(4).tolist()
 
 
+def empty_board_top_moves(q: QTable, size: int, limit: int = 10) -> list[dict]:
+    empty = state_key(State.new(size))
+    row = get_q(q, empty, size**3)
+    top = []
+    for idx in np.argsort(row)[::-1][:limit]:
+        x, y, z = idx_to_xyz(int(idx), size)
+        top.append(
+            {
+                "move": int(idx),
+                "x": x,
+                "y": y,
+                "z": z,
+                "value": round(float(row[idx]), 6),
+                "prob": round(float(row[idx]), 6),
+            }
+        )
+    return top
+
+
 def _write_json(path: Path, payload: dict) -> None:
     path.write_text(json.dumps(payload, indent=2) + "\n")
 
@@ -255,6 +274,7 @@ def snapshot_payload(
     o_wins = sum(1 for outcome in recent if outcome == -1)
     draws = sum(1 for outcome in recent if outcome == 0)
     denom = max(1, len(recent))
+    empty_row = get_q(q, state_key(State.new(cfg.size)), cfg.size**3)
     return {
         "running": running,
         "run_dir": str(run_dir),
@@ -271,7 +291,9 @@ def snapshot_payload(
             "o_win_rate": o_wins / denom,
             "draw_rate": draws / denom,
         },
+        "value": round(float(np.max(empty_row)) if len(empty_row) else 0.0, 6),
         "heatmap": empty_board_heatmap(q, cfg.size),
+        "top_moves": empty_board_top_moves(q, cfg.size),
         "config": asdict(cfg),
     }
 

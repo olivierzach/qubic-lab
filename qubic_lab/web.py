@@ -294,6 +294,7 @@ def _timeline_for_run(path: Path) -> dict[str, Any]:
                 "episode": item.get("episode"),
                 "method": item.get("method"),
                 "heatmap": item.get("heatmap"),
+                "top_moves": item.get("top_moves"),
                 "recent": item.get("recent"),
                 "value": item.get("value"),
                 "policy_loss": item.get("policy_loss"),

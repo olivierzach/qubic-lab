@@ -16,7 +16,7 @@ from qubic_lab.game import State, apply_move, terminal
 from qubic_lab.neural import (
     PolicyStep,
     PolicyValueNet,
-    empty_board_policy_heatmap,
+    empty_board_policy_analysis,
     masked_logits,
     select_action,
 )
@@ -202,6 +202,7 @@ def _snapshot(
     x_wins = sum(1 for outcome in recent if outcome == 1)
     o_wins = sum(1 for outcome in recent if outcome == -1)
     draws = sum(1 for outcome in recent if outcome == 0)
+    opening = empty_board_policy_analysis(model, cfg.size, device=cfg.device)
     return {
         "running": running,
         "run_dir": str(run_dir),
@@ -221,7 +222,9 @@ def _snapshot(
             "o_win_rate": o_wins / denom,
             "draw_rate": draws / denom,
         },
-        "heatmap": empty_board_policy_heatmap(model, cfg.size, device=cfg.device),
+        "value": opening["value"],
+        "heatmap": opening["heatmap"],
+        "top_moves": opening["top_moves"],
         "config": asdict(cfg),
     }
 

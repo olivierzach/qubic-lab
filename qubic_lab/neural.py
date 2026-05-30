@@ -79,17 +79,37 @@ def select_action(
     return action, logp, float(value.item()), obs, mask
 
 
-def empty_board_policy_heatmap(model: PolicyValueNet, size: int, *, device: str = "cpu") -> list[list[list[float]]]:
+def empty_board_policy_analysis(model: PolicyValueNet, size: int, *, device: str = "cpu") -> dict:
     state = State.new(size)
     obs = obs_from_state(state)
     mask = legal_mask(state)
     with torch.no_grad():
         obs_t = torch.as_tensor(obs, dtype=torch.float32, device=device).unsqueeze(0)
         mask_t = torch.as_tensor(mask, dtype=torch.bool, device=device).unsqueeze(0)
-        logits, _ = model(obs_t)
+        logits, value = model(obs_t)
         probs = torch.softmax(masked_logits(logits, mask_t), dim=-1).squeeze(0).cpu().numpy()
     layers = np.zeros((size, size, size), dtype=np.float32)
     for idx, value in enumerate(probs):
         x, y, z = idx_to_xyz(idx, size)
         layers[z, y, x] = float(value)
-    return layers.round(5).tolist()
+    top = []
+    for idx in np.argsort(probs)[::-1][:10]:
+        x, y, z = idx_to_xyz(int(idx), size)
+        top.append(
+            {
+                "move": int(idx),
+                "x": x,
+                "y": y,
+                "z": z,
+                "prob": round(float(probs[idx]), 6),
+            }
+        )
+    return {
+        "heatmap": layers.round(5).tolist(),
+        "value": round(float(value.item()), 6),
+        "top_moves": top,
+    }
+
+
+def empty_board_policy_heatmap(model: PolicyValueNet, size: int, *, device: str = "cpu") -> list[list[list[float]]]:
+    return empty_board_policy_analysis(model, size, device=device)["heatmap"]
