@@ -28,3 +28,25 @@ def test_deep_ppo_smoke_run(tmp_path: Path):
     latest = json.loads((run_dir / "latest.json").read_text())
     assert "value" in latest
     assert len(latest["top_moves"]) == 10
+
+
+def test_deep_ppo_trains_against_tactical_mix(tmp_path: Path):
+    run_dir = tmp_path / "ppo_tactical"
+
+    train_deep_rl(
+        DeepRLConfig(
+            method="ppo",
+            size=3,
+            episodes=6,
+            batch_episodes=3,
+            update_epochs=1,
+            hidden=32,
+            log_every=3,
+            opponent_mix="tactical",
+            run_dir=str(run_dir),
+        )
+    )
+
+    latest = json.loads((run_dir / "latest.json").read_text())
+    assert latest["config"]["opponent_mix"] == "tactical"
+    assert (run_dir / "model.pt").exists()

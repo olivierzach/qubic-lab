@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import random
 import threading
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -13,6 +14,7 @@ from torch import nn
 
 from qubic_lab.artifacts import load_metrics, write_plot_artifacts
 from qubic_lab.game import State, apply_move, terminal
+from qubic_lab.model_api import load_model
 from qubic_lab.neural import (
     PolicyStep,
     PolicyValueNet,
@@ -43,6 +45,7 @@ class DeepRLConfig:
     value_coef: float = 0.5
     max_grad_norm: float = 1.0
     temperature: float = 1.0
+    opponent_mix: str = "self"
     seed: int = 0
     log_every: int = 100
     run_dir: str | None = None
@@ -62,6 +65,39 @@ def _episode_returns(steps: list[PolicyStep], winner: int | None, gamma: float) 
     return np.asarray(returns, dtype=np.float32)
 
 
+def _parse_opponent_mix(mix: str) -> list[tuple[str, float]]:
+    items = []
+    for part in str(mix or "self").split(","):
+        item = part.strip()
+        if not item:
+            continue
+        if ":" in item:
+            name, raw_weight = item.split(":", 1)
+            weight = float(raw_weight)
+        else:
+            name, weight = item, 1.0
+        name = name.strip()
+        if weight > 0 and name:
+            items.append((name, weight))
+    return items or [("self", 1.0)]
+
+
+def _sample_opponent(cfg: DeepRLConfig, rng: np.random.Generator) -> str:
+    items = _parse_opponent_mix(cfg.opponent_mix)
+    names = [name for name, _ in items]
+    weights = np.asarray([weight for _, weight in items], dtype=np.float64)
+    weights = weights / weights.sum()
+    return names[int(rng.choice(len(names), p=weights))]
+
+
+def _opponent_move(opponent_id: str, model: PolicyValueNet, state: State, rng: np.random.Generator, cfg: DeepRLConfig) -> int:
+    if opponent_id == "self":
+        action, *_ = select_action(model, state, rng, temperature=cfg.temperature, device=cfg.device)
+        return int(action)
+    py_rng = random.Random(int(rng.integers(0, 2**31 - 1)))
+    return load_model(opponent_id).choose_move(state, py_rng, greedy=True)
+
+
 def play_episode(
     model: PolicyValueNet,
     size: int,
@@ -70,10 +106,33 @@ def play_episode(
 ) -> tuple[list[PolicyStep], int]:
     state = State.new(size)
     steps: list[PolicyStep] = []
+    opponent_id = _sample_opponent(cfg, rng)
+    learner_player = 1 if int(rng.integers(0, 2)) == 0 else -1
     while True:
-        action, logp, value, obs, mask = select_action(
-            model, state, rng, temperature=cfg.temperature, device=cfg.device
-        )
+        if opponent_id != "self" and state.player != learner_player:
+            action = _opponent_move(opponent_id, model, state, rng, cfg)
+            state = apply_move(state, action)
+            done, winner = terminal(state)
+            if done:
+                returns = _episode_returns(steps, winner, cfg.gamma)
+                patched = []
+                for step, ret in zip(steps, returns):
+                    patched.append(
+                        PolicyStep(
+                            obs=step.obs,
+                            action=step.action,
+                            reward=float(ret),
+                            done=True,
+                            logp=step.logp,
+                            value=step.value,
+                            mask=step.mask,
+                            player=step.player,
+                        )
+                    )
+                return patched, int(winner or 0)
+            continue
+
+        action, logp, value, obs, mask = select_action(model, state, rng, temperature=cfg.temperature, device=cfg.device)
         next_state = apply_move(state, action)
         done, winner = terminal(next_state)
         steps.append(

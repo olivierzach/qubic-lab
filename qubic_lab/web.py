@@ -75,6 +75,7 @@ RUN_DEFAULTS: dict[str, dict[str, Any]] = {
         "value_coef": 0.5,
         "max_grad_norm": 1.0,
         "temperature": 1.0,
+        "opponent_mix": "self:0.4,tactical:0.4,random:0.2",
         "seed": 0,
         "log_every": 100,
         "device": "cpu",
@@ -93,6 +94,7 @@ RUN_DEFAULTS: dict[str, dict[str, Any]] = {
         "value_coef": 0.5,
         "max_grad_norm": 1.0,
         "temperature": 1.0,
+        "opponent_mix": "self:0.4,tactical:0.4,random:0.2",
         "seed": 0,
         "log_every": 100,
         "device": "cpu",
@@ -221,6 +223,7 @@ def _run_payload(payload: dict[str, Any]) -> TabularConfig | DeepRLConfig:
             value_coef=_float_payload(payload, "value_coef", float(defaults["value_coef"]), minimum=0.0, maximum=10.0),
             max_grad_norm=_float_payload(payload, "max_grad_norm", float(defaults["max_grad_norm"]), minimum=0.01, maximum=100.0),
             temperature=_float_payload(payload, "temperature", float(defaults["temperature"]), minimum=0.01, maximum=10.0),
+            opponent_mix=str(payload.get("opponent_mix", defaults["opponent_mix"])),
             device=str(payload.get("device", defaults["device"])),
         )
     return TabularConfig(
