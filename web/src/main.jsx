@@ -282,20 +282,11 @@ function LabApp() {
 
   return (
     <>
-      <Header active="lab" />
       <main className="lab-page paper-width compact-lab">
         {(error || notice) && <div className={error ? 'message error' : 'message'}>{error || notice}</div>}
 
         <section className="lab-grid">
           <aside className="control-rail paper-section">
-            <div className="rail-title">
-              <div className="run-state compact-state">
-                <span>{liveState?.running ? 'running' : 'idle'}</span>
-                <span>{sourceMode === 'live' ? 'live' : 'saved'}</span>
-                <b>{runData.latest?.method ? methodLabel(runData.latest.method) : 'none'}</b>
-              </div>
-            </div>
-
             <RunControls
               config={runConfig}
               onChange={updateConfig}
