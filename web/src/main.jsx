@@ -270,9 +270,21 @@ function LabApp() {
           </aside>
 
           <section className="paper-stack">
-            <SystemInputs config={runConfig} selected={selected} latest={runData.latest} />
-            <RunSummary latest={runData.latest} analysis={analysis} />
-            <MetricsChart history={runData.history || []} />
+            <div className="above-fold">
+              <div className="top-metrics">
+                <SystemInputs config={runConfig} selected={selected} latest={runData.latest} />
+                <RunSummary latest={runData.latest} analysis={analysis} />
+              </div>
+              <section className="paper-section plot-window">
+                <div className="section-head">
+                  <div>
+                    <h2>Training Plot</h2>
+                    <p>Outcome rates, value/update magnitude, entropy, and KL.</p>
+                  </div>
+                </div>
+                <MetricsChart history={runData.history || []} />
+              </section>
+            </div>
             <SnapshotViewer
               snapshot={activeSnapshot}
               snapshots={snapshots}
@@ -579,10 +591,10 @@ function drawBoard(ctx, canvas, analysis, view, playable) {
   const w = canvas.width;
   const h = canvas.height;
   ctx.clearRect(0, 0, w, h);
-  ctx.fillStyle = '#fbfaf5';
+  ctx.fillStyle = '#111318';
   ctx.fillRect(0, 0, w, h);
   if (!analysis?.heatmap) {
-    ctx.fillStyle = '#6f6659';
+    ctx.fillStyle = '#a9a192';
     ctx.font = '22px Georgia, serif';
     ctx.fillText('Choose a model, load a run, or start a game.', 36, 52);
     return;
@@ -607,11 +619,11 @@ function drawBoard(ctx, canvas, analysis, view, playable) {
   };
 
   for (let y = 0; y < size; y += 1) {
-    for (let z = 0; z < size; z += 1) line({ x: 0, y, z }, { x: size - 1, y, z }, 'rgba(58,50,42,.24)');
-    for (let x = 0; x < size; x += 1) line({ x, y, z: 0 }, { x, y, z: size - 1 }, 'rgba(58,50,42,.24)');
+    for (let z = 0; z < size; z += 1) line({ x: 0, y, z }, { x: size - 1, y, z }, 'rgba(196,184,160,.24)');
+    for (let x = 0; x < size; x += 1) line({ x, y, z: 0 }, { x, y, z: size - 1 }, 'rgba(196,184,160,.24)');
   }
   for (let x = 0; x < size; x += 1) {
-    for (let z = 0; z < size; z += 1) line({ x, y: 0, z }, { x, y: size - 1, z }, 'rgba(58,50,42,.14)');
+    for (let z = 0; z < size; z += 1) line({ x, y: 0, z }, { x, y: size - 1, z }, 'rgba(196,184,160,.14)');
   }
 
   drawArrows(ctx, analysis, view, scale, cx, cy);
@@ -630,13 +642,13 @@ function drawBoard(ctx, canvas, analysis, view, playable) {
     const radius = occ ? 25 : 10 + 26 * Math.abs(norm);
     ctx.beginPath();
     ctx.arc(p.screen.x, p.screen.y, radius, 0, Math.PI * 2);
-    ctx.fillStyle = occ === 1 ? '#2f6f59' : occ === -1 ? '#a7503f' : valueColor(norm, legal.has(idx) ? 0.82 : 0.2);
+    ctx.fillStyle = occ === 1 ? '#62b08d' : occ === -1 ? '#d06a58' : valueColor(norm, legal.has(idx) ? 0.82 : 0.2);
     ctx.fill();
-    ctx.strokeStyle = idx === bestMove ? '#9c6b18' : playable && legal.has(idx) ? '#221f1a' : 'rgba(52,45,37,.42)';
+    ctx.strokeStyle = idx === bestMove ? '#d5a447' : playable && legal.has(idx) ? '#f0eadc' : 'rgba(220,210,190,.42)';
     ctx.lineWidth = idx === bestMove ? 5 : playable && legal.has(idx) ? 2 : 1;
     ctx.stroke();
     if (occ) {
-      ctx.fillStyle = '#fbfaf5';
+      ctx.fillStyle = '#101216';
       ctx.font = 'bold 24px Georgia, serif';
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
@@ -646,11 +658,11 @@ function drawBoard(ctx, canvas, analysis, view, playable) {
 
   ctx.textAlign = 'left';
   ctx.textBaseline = 'alphabetic';
-  ctx.fillStyle = '#221f1a';
+  ctx.fillStyle = '#f0eadc';
   ctx.font = '19px Georgia, serif';
   const best = analysis.top_moves?.[0];
   ctx.fillText(best ? `best (${best.x},${best.y},${best.z})  p=${fixed(best.prob)}  value=${fixed(analysis.value)}` : 'terminal position', 32, 38);
-  ctx.fillStyle = '#6f6659';
+  ctx.fillStyle = '#a9a192';
   ctx.font = '14px ui-monospace, SFMono-Regular, Menlo, monospace';
   ctx.fillText('X: green  O: red  arrows: top policy  drag: rotate', 32, h - 28);
 }
@@ -666,7 +678,7 @@ function drawArrows(ctx, analysis, view, scale, cx, cy) {
     const b = project(target, size, view, scale, cx, cy);
     const end = { x: a.x + (b.x - a.x) * 0.82, y: a.y + (b.y - a.y) * 0.82 };
     const alpha = Math.max(0.18, Math.min(0.9, move.prob * 8));
-    const color = `rgba(156,107,24,${alpha})`;
+    const color = `rgba(213,164,71,${alpha})`;
     ctx.strokeStyle = color;
     ctx.lineWidth = 2 + 5 * move.prob;
     ctx.beginPath();
@@ -685,9 +697,9 @@ function drawArrows(ctx, analysis, view, scale, cx, cy) {
 }
 
 function valueColor(t, alpha) {
-  if (t >= 0) return `rgba(${Math.round(72 + 55 * t)},${Math.round(132 + 65 * t)},${Math.round(108 + 25 * t)},${alpha})`;
+  if (t >= 0) return `rgba(${Math.round(70 + 58 * t)},${Math.round(142 + 72 * t)},${Math.round(116 + 38 * t)},${alpha})`;
   const u = -t;
-  return `rgba(${Math.round(170 + 25 * u)},${Math.round(92 - 22 * u)},${Math.round(72 - 18 * u)},${alpha})`;
+  return `rgba(${Math.round(184 + 38 * u)},${Math.round(92 - 16 * u)},${Math.round(78 - 10 * u)},${alpha})`;
 }
 
 function MetricsChart({ history }) {
@@ -702,13 +714,13 @@ function MetricsChart({ history }) {
 
 function drawMetrics(ctx, canvas, history) {
   ctx.clearRect(0, 0, canvas.width, canvas.height);
-  ctx.fillStyle = '#fbfaf5';
+  ctx.fillStyle = '#111318';
   ctx.fillRect(0, 0, canvas.width, canvas.height);
-  ctx.fillStyle = '#221f1a';
+  ctx.fillStyle = '#f0eadc';
   ctx.font = '22px Georgia, serif';
   ctx.fillText('Training diagnostics', 56, 34);
   if (history.length < 2) {
-    ctx.fillStyle = '#6f6659';
+    ctx.fillStyle = '#a9a192';
     ctx.font = '17px Georgia, serif';
     ctx.fillText('Load or start a run to draw live plots.', 56, 70);
     return;
@@ -722,30 +734,30 @@ function drawMetrics(ctx, canvas, history) {
     { x: 78, y: 450, w: 1080, h: 130, title: 'Policy statistics', ymin: 0, ymax: Math.max(0.05, ...history.map((d) => Number(d.entropy || 0)), ...history.map((d) => Number(d.approx_kl || 0))) },
   ];
   for (const p of panels) axes(ctx, p);
-  series(ctx, panels[0], history, minX, maxX, (d) => d.recent?.x_win_rate, '#2f6f59');
-  series(ctx, panels[0], history, minX, maxX, (d) => d.recent?.o_win_rate, '#a7503f');
-  series(ctx, panels[0], history, minX, maxX, (d) => d.recent?.draw_rate, '#526f9e');
-  series(ctx, panels[1], history, minX, maxX, (d) => d.value ?? d.mean_value, '#2b5f88');
-  series(ctx, panels[1], history, minX, maxX, (d) => Math.abs(Number(d.mean_abs_update || 0)), '#9c6b18');
-  series(ctx, panels[2], history, minX, maxX, (d) => Number(d.entropy || 0), '#6b5b95');
-  series(ctx, panels[2], history, minX, maxX, (d) => Number(d.approx_kl || 0), '#477486');
+  series(ctx, panels[0], history, minX, maxX, (d) => d.recent?.x_win_rate, '#62b08d');
+  series(ctx, panels[0], history, minX, maxX, (d) => d.recent?.o_win_rate, '#d06a58');
+  series(ctx, panels[0], history, minX, maxX, (d) => d.recent?.draw_rate, '#76a8cf');
+  series(ctx, panels[1], history, minX, maxX, (d) => d.value ?? d.mean_value, '#7db5d7');
+  series(ctx, panels[1], history, minX, maxX, (d) => Math.abs(Number(d.mean_abs_update || 0)), '#d5a447');
+  series(ctx, panels[2], history, minX, maxX, (d) => Number(d.entropy || 0), '#b79adb');
+  series(ctx, panels[2], history, minX, maxX, (d) => Number(d.approx_kl || 0), '#8cc8d4');
 }
 
 function axes(ctx, p) {
-  ctx.fillStyle = '#f7f3ea';
+  ctx.fillStyle = '#151820';
   ctx.fillRect(p.x, p.y, p.w, p.h);
-  ctx.strokeStyle = '#a99c88';
+  ctx.strokeStyle = '#3f4550';
   ctx.strokeRect(p.x, p.y, p.w, p.h);
-  ctx.fillStyle = '#221f1a';
+  ctx.fillStyle = '#f0eadc';
   ctx.font = '16px Georgia, serif';
   ctx.fillText(p.title, p.x + 12, p.y + 22);
-  ctx.fillStyle = '#746b5d';
+  ctx.fillStyle = '#a9a192';
   ctx.font = '12px ui-monospace, SFMono-Regular, Menlo, monospace';
   for (let i = 0; i <= 4; i += 1) {
     const frac = i / 4;
     const y = p.y + p.h - frac * p.h;
     const v = p.ymin + frac * (p.ymax - p.ymin);
-    ctx.strokeStyle = '#ded5c7';
+    ctx.strokeStyle = '#282d36';
     ctx.beginPath();
     ctx.moveTo(p.x, y);
     ctx.lineTo(p.x + p.w, y);

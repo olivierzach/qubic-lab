@@ -1,15 +1,15 @@
 :root {
-  color-scheme: light;
-  --paper: #fbfaf5;
-  --paper-2: #f5efe3;
-  --ink: #221f1a;
-  --muted: #6f6659;
-  --line: #cfc3af;
-  --line-strong: #9f927e;
-  --green: #2f6f59;
-  --red: #a7503f;
-  --blue: #2b5f88;
-  --gold: #9c6b18;
+  color-scheme: dark;
+  --paper: #0f1115;
+  --paper-2: #151820;
+  --ink: #f0eadc;
+  --muted: #a9a192;
+  --line: #303640;
+  --line-strong: #5b6270;
+  --green: #62b08d;
+  --red: #d06a58;
+  --blue: #76a8cf;
+  --gold: #d5a447;
 }
 
 * { box-sizing: border-box; }
@@ -17,8 +17,8 @@
 body {
   margin: 0;
   background:
-    linear-gradient(rgba(90, 72, 44, .035) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(90, 72, 44, .025) 1px, transparent 1px),
+    linear-gradient(rgba(240, 234, 220, .035) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(240, 234, 220, .025) 1px, transparent 1px),
     var(--paper);
   background-size: 28px 28px;
   color: var(--ink);
@@ -48,7 +48,7 @@ p { color: var(--muted); line-height: 1.45; }
   justify-content: space-between;
   gap: 20px;
   align-items: end;
-  border-bottom: 1px solid var(--ink);
+  border-bottom: 1px solid var(--line-strong);
 }
 
 .brand {
@@ -75,7 +75,7 @@ nav, .toolbar, .button-row, .artifact-row {
 button, select, input, nav a, .home a, .artifact-row a {
   min-height: 34px;
   border: 1px solid var(--line-strong);
-  background: rgba(255, 252, 244, .82);
+  background: rgba(21, 24, 32, .86);
   color: var(--ink);
   border-radius: 2px;
   padding: 6px 10px;
@@ -85,8 +85,8 @@ button, select, input, nav a, .home a, .artifact-row a {
 input, select { width: 100%; }
 button, nav a, .artifact-row a { cursor: pointer; }
 button:hover, nav a:hover, nav a.active, .home a:hover, .artifact-row a:hover, .row-button.active {
-  border-color: var(--ink);
-  background: #fffdf7;
+  border-color: var(--gold);
+  background: #1b202b;
 }
 button:disabled, input:disabled {
   opacity: .45;
@@ -113,8 +113,8 @@ label {
   display: grid;
   align-content: start;
   gap: 12px;
-  border-color: var(--ink);
-  background: rgba(255, 252, 244, .72);
+  border-color: var(--line-strong);
+  background: rgba(21, 24, 32, .84);
 }
 .home strong {
   font-family: Georgia, "Times New Roman", serif;
@@ -127,19 +127,19 @@ label {
   margin-bottom: 44px;
 }
 .paper-section {
-  background: rgba(255, 252, 244, .84);
+  background: rgba(21, 24, 32, .88);
   border: 1px solid var(--line);
-  box-shadow: 0 1px 0 rgba(35, 31, 24, .08);
+  box-shadow: 0 1px 0 rgba(240, 234, 220, .04);
   padding: 16px;
   min-width: 0;
 }
 .title-row {
-  margin: 18px 0 14px;
+  margin: 14px 0 10px;
   display: flex;
   align-items: end;
   justify-content: space-between;
   gap: 18px;
-  border-top: 2px solid var(--ink);
+  border-top: 2px solid var(--line-strong);
 }
 .lede { margin-bottom: 0; max-width: 68ch; font-size: 17px; }
 .run-state {
@@ -158,7 +158,7 @@ label {
 
 .lab-grid {
   display: grid;
-  grid-template-columns: 318px minmax(0, 1fr);
+  grid-template-columns: 306px minmax(0, 1fr);
   gap: 14px;
   align-items: start;
 }
@@ -179,6 +179,25 @@ label {
   display: grid;
   gap: 14px;
   min-width: 0;
+}
+.above-fold {
+  display: grid;
+  grid-template-columns: minmax(320px, .82fr) minmax(560px, 1.18fr);
+  gap: 14px;
+  align-items: start;
+}
+.top-metrics {
+  display: grid;
+  gap: 14px;
+  min-width: 0;
+}
+.plot-window {
+  grid-column: 2;
+  grid-row: 1;
+  min-height: 0;
+}
+.plot-window .section-head {
+  margin-bottom: 6px;
 }
 .two-column {
   display: grid;
@@ -227,7 +246,7 @@ label {
 }
 .metric {
   min-height: 84px;
-  background: rgba(255, 252, 244, .9);
+  background: rgba(15, 17, 21, .72);
   padding: 11px;
   display: grid;
   align-content: space-between;
@@ -266,7 +285,7 @@ label {
 }
 .board3d { aspect-ratio: 5 / 3; cursor: grab; }
 .board3d.compact { aspect-ratio: 7 / 3; }
-.chart { aspect-ratio: 15 / 8; }
+.chart { aspect-ratio: 16 / 7; }
 
 .policy-table {
   width: 100%;
@@ -353,20 +372,24 @@ label {
 .message {
   margin: 0 0 14px;
   border: 1px solid var(--gold);
-  background: #fff8e6;
+  background: rgba(213, 164, 71, .14);
   padding: 10px 12px;
   color: var(--ink);
   overflow-wrap: anywhere;
 }
 .message.error {
   border-color: var(--red);
-  background: #fff0eb;
+  background: rgba(208, 106, 88, .12);
   color: var(--red);
 }
 
 @media (max-width: 980px) {
-  .lab-grid, .play-grid, .home, .two-column {
+  .lab-grid, .play-grid, .home, .two-column, .above-fold {
     grid-template-columns: 1fr;
+  }
+  .plot-window {
+    grid-column: auto;
+    grid-row: auto;
   }
   .control-rail {
     position: static;
