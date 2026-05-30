@@ -250,24 +250,23 @@ function LabApp() {
   return (
     <>
       <Header active="lab" />
-      <main className="lab-page paper-width">
-        <section className="paper-section title-row">
-          <div>
-            <p className="kicker">Experiment record</p>
-            <h1>Research Lab</h1>
-            <p className="lede">Configure Qubic training runs, track live outcomes, and inspect saved model policy surfaces over time.</p>
-          </div>
-          <div className="run-state">
-            <span>{liveState?.running ? 'running' : 'idle'}</span>
-            <span>{sourceMode === 'live' ? 'live source' : 'saved source'}</span>
-            <b>{runData.latest?.method ? methodLabel(runData.latest.method) : 'no active run'}</b>
-          </div>
-        </section>
-
+      <main className="lab-page paper-width compact-lab">
         {(error || notice) && <div className={error ? 'message error' : 'message'}>{error || notice}</div>}
 
         <section className="lab-grid">
           <aside className="control-rail paper-section">
+            <div className="rail-title">
+              <div>
+                <p className="kicker">Experiment record</p>
+                <h2>Qubic Lab</h2>
+              </div>
+              <div className="run-state compact-state">
+                <span>{liveState?.running ? 'running' : 'idle'}</span>
+                <span>{sourceMode === 'live' ? 'live' : 'saved'}</span>
+                <b>{runData.latest?.method ? methodLabel(runData.latest.method) : 'none'}</b>
+              </div>
+            </div>
+
             <h2>Run Parameters</h2>
             <RunControls config={runConfig} onChange={updateConfig} busy={busy} onStart={startRun} onStop={stopRun} />
 
@@ -287,14 +286,13 @@ function LabApp() {
               </select>
             </label>
             <button onClick={analyzeModel} disabled={!selectedModel || Boolean(busy)}>Analyze opening</button>
+
+            <SystemInputs config={runConfig} selected={selected} latest={runData.latest} compact />
           </aside>
 
           <section className="paper-stack">
-            <div className="above-fold">
-              <div className="top-metrics">
-                <SystemInputs config={runConfig} selected={selected} latest={runData.latest} />
-                <RunSummary latest={runData.latest} analysis={analysis} />
-              </div>
+            <RunSummary latest={runData.latest} analysis={analysis} />
+            <div className="lab-focus-grid">
               <section className="paper-section plot-window">
                 <div className="section-head">
                   <div>
@@ -304,15 +302,15 @@ function LabApp() {
                 </div>
                 <MetricsChart history={runData.history || []} />
               </section>
+              <SnapshotViewer
+                snapshot={activeSnapshot}
+                snapshots={snapshots}
+                snapshotIndex={snapshotIndex}
+                previousSnapshot={previousSnapshot}
+                onIndex={setSnapshotIndex}
+                analysis={analysis}
+              />
             </div>
-            <SnapshotViewer
-              snapshot={activeSnapshot}
-              snapshots={snapshots}
-              snapshotIndex={snapshotIndex}
-              previousSnapshot={previousSnapshot}
-              onIndex={setSnapshotIndex}
-              analysis={analysis}
-            />
             <div className="two-column">
               <ModelCatalog models={models} selectedModel={selectedModel} onSelect={setSelectedModel} />
               <RunList runs={runs} onLoad={(runDir) => { setSelectedRun(runDir); loadRun(runDir); }} />
@@ -371,7 +369,7 @@ function RunControls({ config, onChange, busy, onStart, onStop }) {
   );
 }
 
-function SystemInputs({ config, selected, latest }) {
+function SystemInputs({ config, selected, latest, compact = false }) {
   const rows = [
     ['method', methodLabel(config.method)],
     ['episodes', config.episodes],
@@ -384,7 +382,7 @@ function SystemInputs({ config, selected, latest }) {
     ['latest episode', latest?.episode || 0],
   ];
   return (
-    <section className="paper-section">
+    <section className={compact ? 'sidebar-block' : 'paper-section'}>
       <h2>System Inputs</h2>
       <dl className="input-table">
         {rows.map(([key, value]) => (
@@ -420,7 +418,7 @@ function SnapshotViewer({ snapshot, snapshots, snapshotIndex, previousSnapshot, 
         </label>
       </div>
       <ValueHeatmap snapshot={source} previous={previousSnapshot} />
-      <Board3D analysis={source} compact />
+      <LayerStackView snapshot={source} />
       <PolicyTable analysis={source} />
     </section>
   );
@@ -446,6 +444,11 @@ function heatmapTopMoves(heatmap, limit = 8) {
     .slice(0, limit);
 }
 
+function policyRankMap(snapshot, limit = 12) {
+  const top = (snapshot?.top_moves || heatmapTopMoves(snapshot?.heatmap, limit)).slice(0, limit);
+  return new Map(top.map((m, index) => [`${m.x}-${m.y}-${m.z}`, { ...m, rank: index + 1 }]));
+}
+
 function cellTone(value, maxAbs) {
   const t = Math.max(-1, Math.min(1, value / Math.max(maxAbs, 1e-6)));
   if (t >= 0) {
@@ -464,6 +467,7 @@ function ValueHeatmap({ snapshot, previous }) {
   const size = heatmap.length;
   const stats = heatmapStats(heatmap);
   const top = heatmapTopMoves(heatmap, 6);
+  const policy = policyRankMap(snapshot, 10);
   return (
     <div className="value-heatmap">
       <div className="heatmap-meta">
@@ -481,6 +485,7 @@ function ValueHeatmap({ snapshot, previous }) {
                   const current = Number(value || 0);
                   const delta = current - heatmapAt(previous?.heatmap, x, y, z);
                   const isTop = top.some((m) => m.x === x && m.y === y && m.z === z);
+                  const policyMove = policy.get(`${x}-${y}-${z}`);
                   return (
                     <div
                       className={isTop ? 'heat-cell top-cell' : 'heat-cell'}
@@ -488,6 +493,7 @@ function ValueHeatmap({ snapshot, previous }) {
                       style={{ background: cellTone(current, stats.maxAbs) }}
                     >
                       <b>{fixed(current, Math.abs(current) < 0.01 ? 4 : 3)}</b>
+                      {policyMove && <em>#{policyMove.rank} {fixed(policyMove.prob ?? policyMove.value, 2)}</em>}
                       <small>{delta === 0 ? '0' : `${delta > 0 ? '+' : ''}${fixed(delta, 3)}`}</small>
                     </div>
                   );
@@ -501,6 +507,48 @@ function ValueHeatmap({ snapshot, previous }) {
         <span className="neg">negative</span>
         <span className="zero">0</span>
         <span className="pos">positive</span>
+      </div>
+    </div>
+  );
+}
+
+function LayerStackView({ snapshot }) {
+  const heatmap = snapshot?.heatmap;
+  if (!heatmap) return null;
+  const size = heatmap.length;
+  const stats = heatmapStats(heatmap);
+  const policy = policyRankMap(snapshot, 8);
+  return (
+    <div className="stack-view" aria-label="Stacked value and policy projection">
+      <div className="stack-copy">
+        <h3>3D stack projection</h3>
+        <p>Each z layer is a square board. Color is value, gold labels are top policy targets.</p>
+      </div>
+      <div className="stack-layers" style={{ '--layers': size }}>
+        {heatmap.map((layer, z) => (
+          <div className="stack-layer" style={{ '--z': z, '--size': size }} key={`stack-${z}`}>
+            <header>z {z}</header>
+            <div className="stack-grid" style={{ gridTemplateColumns: `repeat(${size}, minmax(0, 1fr))` }}>
+              {layer.map((row, y) =>
+                row.map((value, x) => {
+                  const current = Number(value || 0);
+                  const ranked = policy.get(`${x}-${y}-${z}`);
+                  return (
+                    <div
+                      className={ranked ? 'stack-cell stack-top' : 'stack-cell'}
+                      key={`${x}-${y}-${z}`}
+                      title={`(${x}, ${y}, ${z}) value ${fixed(current, 4)}`}
+                      style={{ background: cellTone(current, stats.maxAbs) }}
+                    >
+                      <span>{fixed(current, size <= 3 ? 2 : 1)}</span>
+                      {ranked && <b>{ranked.rank}</b>}
+                    </div>
+                  );
+                }),
+              )}
+            </div>
+          </div>
+        ))}
       </div>
     </div>
   );
