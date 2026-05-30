@@ -72,7 +72,7 @@ nav, .toolbar, .button-row, .artifact-row {
   flex-wrap: wrap;
 }
 
-button, select, input, nav a, .home a, .artifact-row a {
+button, select, input, nav a, .home a, .artifact-row a, .button-link {
   min-height: 34px;
   border: 1px solid var(--line-strong);
   background: rgba(21, 24, 32, .86);
@@ -83,8 +83,8 @@ button, select, input, nav a, .home a, .artifact-row a {
   text-decoration: none;
 }
 input, select { width: 100%; }
-button, nav a, .artifact-row a { cursor: pointer; }
-button:hover, nav a:hover, nav a.active, .home a:hover, .artifact-row a:hover, .row-button.active {
+button, nav a, .artifact-row a, .button-link { cursor: pointer; }
+button:hover, nav a:hover, nav a.active, .home a:hover, .artifact-row a:hover, .button-link:hover, .row-button.active {
   border-color: var(--gold);
   background: #1b202b;
 }
@@ -292,6 +292,23 @@ label {
   background: var(--line);
   border: 1px solid var(--line);
 }
+.eval-strip {
+  min-height: 34px;
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+  padding: 7px 9px;
+  border: 1px solid var(--line);
+  background: rgba(15, 17, 21, .72);
+  color: var(--muted);
+  font: 12px ui-monospace, SFMono-Regular, Menlo, monospace;
+  text-transform: uppercase;
+}
+.eval-strip b {
+  color: var(--gold);
+  font-size: 14px;
+}
 .metric {
   min-height: 58px;
   background: rgba(15, 17, 21, .72);
@@ -333,7 +350,7 @@ label {
 }
 .board3d { aspect-ratio: 5 / 3; cursor: grab; }
 .board3d.compact { aspect-ratio: 7 / 3; }
-.chart { aspect-ratio: 15 / 8; }
+.chart { aspect-ratio: 5 / 3; min-height: 250px; }
 .lab-board3d {
   aspect-ratio: 5 / 3;
   min-height: 250px;

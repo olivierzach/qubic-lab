@@ -111,6 +111,8 @@ function LabApp() {
   const [busy, setBusy] = useState('');
   const [notice, setNotice] = useState('');
   const [error, setError] = useState('');
+  const [evalGames, setEvalGames] = useState(200);
+  const [evalResult, setEvalResult] = useState(null);
 
   const selected = models.find((m) => m.id === selectedModel);
   const snapshots = timeline.length ? timeline : (runData.history || []).filter((d) => d.heatmap);
@@ -279,6 +281,24 @@ function LabApp() {
     }
   };
 
+  const evaluateSelected = async () => {
+    if (!selectedModel || selectedModel === 'random') return;
+    setBusy('eval');
+    setError('');
+    try {
+      const size = selected?.size || runConfig.size || 3;
+      const data = await api('/api/eval/tournament', {
+        method: 'POST',
+        body: JSON.stringify({ model_ids: [selectedModel], size, games: evalGames, seed: runConfig.seed || 0 }),
+      });
+      setEvalResult(data);
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setBusy('');
+    }
+  };
+
   return (
     <>
       <main className="lab-page paper-width compact-lab">
@@ -311,12 +331,18 @@ function LabApp() {
               </select>
             </label>
             <button onClick={analyzeModel} disabled={!selectedModel || Boolean(busy)}>Analyze opening</button>
+            <label>Eval games<input type="number" min="2" step="20" value={evalGames} onChange={(e) => setEvalGames(Number(e.target.value))} /></label>
+            <div className="button-row">
+              <button onClick={evaluateSelected} disabled={!selectedModel || selectedModel === 'random' || Boolean(busy)}>Evaluate</button>
+              <a className="button-link" href={`/play?model=${encodeURIComponent(selectedModel)}`}>Play selected</a>
+            </div>
 
             <SystemInputs config={runConfig} selected={selected} latest={runData.latest} compact />
           </aside>
 
           <section className="paper-stack">
             <RunSummary latest={runData.latest} analysis={analysis} />
+            <EvalSummary result={evalResult} selectedModel={selectedModel} />
             <div className="lab-focus-grid">
               <section className="paper-section plot-window">
                 <MetricsChart history={runData.history || []} />
@@ -658,7 +684,8 @@ function PlayApp() {
     api('/api/models').then((data) => {
       const nextModels = data.models || [];
       setModels(nextModels);
-      const preferred = nextModels.find((m) => m.kind === 'neural') || nextModels[0];
+      const requested = new URLSearchParams(window.location.search).get('model');
+      const preferred = nextModels.find((m) => m.id === requested) || nextModels.find((m) => m.kind === 'neural') || nextModels[0];
       if (preferred) setSelectedModel(preferred.id);
     }).catch((err) => setError(String(err)));
   }, []);
@@ -1242,6 +1269,27 @@ function RunSummary({ latest, analysis }) {
         <span>Top policy moves</span>
         <div>{top.length ? top.map((m) => <b key={m.move}>({m.x},{m.y},{m.z}) {fixed(m.prob, 2)}</b>) : 'none'}</div>
       </div>
+    </section>
+  );
+}
+
+function EvalSummary({ result, selectedModel }) {
+  const match = result?.matches?.find((item) => item.a === selectedModel || item.b === selectedModel);
+  if (!match) return null;
+  const wins = match.wins || {};
+  const modelWins = wins[selectedModel] || 0;
+  const randomWins = wins.random || 0;
+  const draws = wins.draw || 0;
+  const games = match.games || result.games || Math.max(1, modelWins + randomWins + draws);
+  const score = (modelWins + 0.5 * draws) / Math.max(1, games);
+  return (
+    <section className="eval-strip">
+      <span>fixed eval</span>
+      <b>{pct(score)}</b>
+      <span>W {modelWins}</span>
+      <span>D {draws}</span>
+      <span>L {randomWins}</span>
+      <span>{games} games vs random</span>
     </section>
   );
 }
