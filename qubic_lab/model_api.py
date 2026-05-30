@@ -51,6 +51,12 @@ class ModelRecord:
     size: int
     method: str
     score: float | None = None
+    episode: int | None = None
+    opponent_mix: str | None = None
+    recent_x: float | None = None
+    recent_o: float | None = None
+    recent_draw: float | None = None
+    updated_at: float | None = None
 
 
 class LoadedModel:
@@ -146,6 +152,16 @@ def _run_latest(path: Path) -> dict[str, Any] | None:
         return None
 
 
+def _short_mix(mix: str | None) -> str:
+    if not mix:
+        return ""
+    if mix in {"tactical", "self", "random"}:
+        return mix
+    if "tactical:1" in mix or "tactical:1.0" in mix:
+        return "tactical"
+    return mix.replace(":0.", ":.").replace(",random:0", "")
+
+
 def _winning_moves(state: State, player: int) -> list[int]:
     wins = []
     test_state = State(board=state.board, player=player)
@@ -208,7 +224,21 @@ def list_models(root: Path = Path("runs")) -> list[ModelRecord]:
         cfg = latest.get("config", {})
         size = int(cfg.get("size", 3))
         method = str(latest.get("method", cfg.get("method", "run")))
-        label = f"{method} · {latest.get('run_id', run_dir.name)}"
+        episode = int(latest.get("episode", 0) or 0)
+        opponent_mix = cfg.get("opponent_mix")
+        recent = latest.get("recent", {})
+        mix_label = _short_mix(str(opponent_mix)) if opponent_mix else ""
+        label = f"{method} · {latest.get('run_id', run_dir.name)} · ep {episode}"
+        if mix_label:
+            label = f"{label} · {mix_label}"
+        record_kwargs = {
+            "episode": episode,
+            "opponent_mix": str(opponent_mix) if opponent_mix else None,
+            "recent_x": recent.get("x_win_rate"),
+            "recent_o": recent.get("o_win_rate"),
+            "recent_draw": recent.get("draw_rate"),
+            "updated_at": latest_path.stat().st_mtime,
+        }
         if (run_dir / "model.pt").exists():
             records.append(
                 ModelRecord(
@@ -218,6 +248,7 @@ def list_models(root: Path = Path("runs")) -> list[ModelRecord]:
                     run_dir=str(run_dir),
                     size=size,
                     method=method,
+                    **record_kwargs,
                 )
             )
         elif (run_dir / "q_table.npz").exists():
@@ -229,9 +260,10 @@ def list_models(root: Path = Path("runs")) -> list[ModelRecord]:
                     run_dir=str(run_dir),
                     size=size,
                     method=method,
+                    **record_kwargs,
                 )
             )
-    records.sort(key=lambda r: (r.method, r.id), reverse=False)
+    records.sort(key=lambda r: r.updated_at or 0.0, reverse=True)
     return [*builtins, *records]
 
 

@@ -55,6 +55,23 @@ const moveCoord = (move, size) => ({
 const pct = (value) => `${Math.round((Number(value) || 0) * 100)}%`;
 const fixed = (value, places = 3) => Number(value || 0).toFixed(places);
 const methodLabel = (method) => String(method || 'run').toUpperCase();
+const shortMix = (mix) => {
+  const value = String(mix || '');
+  if (!value) return '';
+  if (value.includes('tactical:1')) return 'tactical';
+  return value.replaceAll(':0.', ':.').replace(',random:0', '');
+};
+const runLabel = (run) => {
+  const mix = shortMix(run?.config?.opponent_mix);
+  return `${methodLabel(run?.method || run?.config?.method)} · ${run?.run_id || run?.run_dir} · ep ${run?.episode || 0}${mix ? ` · ${mix}` : ''}`;
+};
+const modelMeta = (model) => {
+  const parts = [model?.kind || 'model', `size ${model?.size || 3}`];
+  if (model?.episode) parts.push(`ep ${model.episode}`);
+  if (model?.opponent_mix) parts.push(shortMix(model.opponent_mix));
+  if (model?.recent_x != null) parts.push(`X ${pct(model.recent_x)}`);
+  return parts.filter(Boolean).join(' · ');
+};
 const formatBytes = (bytes = 0) => {
   if (!bytes) return '';
   if (bytes < 1024) return `${bytes} B`;
@@ -152,6 +169,9 @@ function LabApp() {
     setArtifacts(data.artifacts || data.latest?.artifacts || []);
     setSourceMode('saved');
     setSnapshotIndex(0);
+    if ((data.artifacts || []).some((item) => ['model.pt', 'q_table.npz'].includes(item.file))) {
+      setSelectedModel(data.latest?.run_dir || runDir);
+    }
   };
 
   const loadTimeline = async (modelId = selectedModel) => {
@@ -346,7 +366,7 @@ function LabApp() {
             <label>Saved run
               <select value={selectedRun} onChange={(e) => setSelectedRun(e.target.value)}>
                 <option value="">Select run</option>
-                {runs.map((r) => <option key={r.run_dir} value={r.run_dir}>{methodLabel(r.method)} · {r.run_id || r.run_dir}</option>)}
+                {runs.map((r) => <option key={r.run_dir} value={r.run_dir}>{runLabel(r)}</option>)}
               </select>
             </label>
             <button onClick={() => loadRun()} disabled={!selectedRun}>Load run</button>
@@ -1605,7 +1625,7 @@ function ModelCatalog({ models, selectedModel, onSelect }) {
             onClick={() => onSelect(model.id)}
           >
             <span>{model.label || model.id}</span>
-            <small>{model.kind || 'model'} · size {model.size || 3}</small>
+            <small>{modelMeta(model)}</small>
           </button>
         ))}
       </div>
@@ -1637,8 +1657,8 @@ function RunList({ runs, onLoad }) {
       <div className="list-stack">
         {runs.slice(0, 12).map((r) => (
           <button className="row-button" key={r.run_dir} onClick={() => onLoad(r.run_dir)}>
-            <span>{methodLabel(r.method)} · {r.run_id || r.run_dir}</span>
-            <small>X {pct(r.recent?.x_win_rate)} · O {pct(r.recent?.o_win_rate)} · ep {r.episode || 0}</small>
+            <span>{runLabel(r)}</span>
+            <small>X {pct(r.recent?.x_win_rate)} · O {pct(r.recent?.o_win_rate)} · D {pct(r.recent?.draw_rate)}</small>
           </button>
         ))}
       </div>
