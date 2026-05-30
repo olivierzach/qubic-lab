@@ -107,7 +107,7 @@ class LoadedModel:
             return probs, float(np.tanh(score / 8.0))
 
         if self.record.kind == "mcts":
-            return mcts_policy(state, simulations=64, rng=random.Random(0))
+            return mcts_policy(state, simulations=_mcts_simulations(self.record.id), rng=random.Random(0))
 
         if self.record.kind == "tabular":
             row = self._load_q().get(state_key(state), np.zeros(n, dtype=np.float32))
@@ -132,7 +132,7 @@ class LoadedModel:
         if self.record.kind == "tactical":
             return tactical_move(state, rng)[0]
         if self.record.kind == "mcts":
-            return mcts_move(state, rng=rng, simulations=64)
+            return mcts_move(state, rng=rng, simulations=_mcts_simulations(self.record.id))
 
         probs, _ = self.policy_value(state)
         moves = legal_moves(state).astype(int)
@@ -317,6 +317,18 @@ def mcts_move(
     return int(rng.choice(best.tolist()))
 
 
+def _mcts_simulations(model_id: str) -> int:
+    if model_id == "mcts":
+        return 64
+    for sep in (":", "-"):
+        if model_id.startswith(f"mcts{sep}"):
+            try:
+                return max(1, int(model_id.split(sep, 1)[1]))
+            except ValueError:
+                return 64
+    return 64
+
+
 def list_models(root: Path = Path("runs")) -> list[ModelRecord]:
     builtins = [
         ModelRecord(id="random", kind="random", label="Random baseline", run_dir=None, size=3, method="random"),
@@ -376,6 +388,36 @@ def list_models(root: Path = Path("runs")) -> list[ModelRecord]:
 
 
 def load_model(model_id: str) -> LoadedModel:
+    if model_id == "mcts" or model_id.startswith("mcts:") or model_id.startswith("mcts-"):
+        sims = _mcts_simulations(model_id)
+        return LoadedModel(
+            ModelRecord(
+                id=model_id,
+                kind="mcts",
+                label=f"MCTS-{sims} baseline",
+                run_dir=None,
+                size=3,
+                method="mcts",
+            )
+        )
+    direct_path = Path(model_id).expanduser()
+    if (direct_path / "model.pt").exists() or (direct_path / "q_table.npz").exists():
+        latest = _run_latest(direct_path) or {}
+        cfg = latest.get("config", {})
+        method = str(latest.get("method", cfg.get("method", "run")))
+        size = int(cfg.get("size", 3))
+        return LoadedModel(
+            ModelRecord(
+                id=str(direct_path),
+                kind="neural" if (direct_path / "model.pt").exists() else "tabular",
+                label=f"{method} · {direct_path.name}",
+                run_dir=str(direct_path),
+                size=size,
+                method=method,
+                episode=int(latest.get("episode", 0) or 0),
+                updated_at=(direct_path / "latest.json").stat().st_mtime if (direct_path / "latest.json").exists() else None,
+            )
+        )
     for record in list_models():
         if record.id == model_id:
             return LoadedModel(record)
@@ -470,10 +512,16 @@ def evaluate_match(a_id: str, b_id: str, *, size: int, games: int, seed: int) ->
     a = load_model(a_id)
     b = load_model(b_id)
     wins = {a_id: 0, b_id: 0, "draw": 0}
+    side_wins = {
+        a_id: {"as_x": 0, "as_o": 0, "as_x_games": 0, "as_o_games": 0},
+        b_id: {"as_x": 0, "as_o": 0, "as_x_games": 0, "as_o_games": 0},
+    }
     records = []
     for game_idx in range(games):
         state = State.new(size)
         players = {1: a, -1: b} if game_idx % 2 == 0 else {1: b, -1: a}
+        side_wins[players[1].record.id]["as_x_games"] += 1
+        side_wins[players[-1].record.id]["as_o_games"] += 1
         while True:
             model = players[state.player]
             move = model.choose_move(state, rng, greedy=True)
@@ -486,6 +534,8 @@ def evaluate_match(a_id: str, b_id: str, *, size: int, games: int, seed: int) ->
                 else:
                     winner_model = players[int(winner)]
                     wins[winner_model.record.id] += 1
+                    side_key = "as_x" if winner == 1 else "as_o"
+                    side_wins[winner_model.record.id][side_key] += 1
                     winner_id = winner_model.record.id
                 records.append(
                     {
@@ -496,7 +546,7 @@ def evaluate_match(a_id: str, b_id: str, *, size: int, games: int, seed: int) ->
                     }
                 )
                 break
-    return {"a": a_id, "b": b_id, "games": games, "wins": wins, "records": records}
+    return {"a": a_id, "b": b_id, "games": games, "wins": wins, "side_wins": side_wins, "records": records}
 
 
 def run_tournament(model_ids: list[str], *, size: int = 3, games: int = 20, seed: int = 0) -> dict[str, Any]:

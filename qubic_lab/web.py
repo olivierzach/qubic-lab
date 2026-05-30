@@ -14,6 +14,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+from qubic_lab.alpha_zero import AlphaZeroConfig, train_alpha_zero
 from qubic_lab.artifacts import load_metrics, write_plot_artifacts
 from qubic_lab.game import State, apply_move, legal_moves, terminal
 from qubic_lab.model_api import (
@@ -25,6 +26,7 @@ from qubic_lab.model_api import (
     run_tournament,
 )
 from qubic_lab.neural import PolicyValueNet
+from qubic_lab.reporting import generate_report_card, write_report_card
 from qubic_lab.rl_deep import (
     DeepRLConfig,
     _snapshot as deep_snapshot,
@@ -109,6 +111,22 @@ RUN_DEFAULTS: dict[str, dict[str, Any]] = {
         "o_reward_weight": 1.5,
         "seed": 0,
         "log_every": 100,
+        "device": "cpu",
+    },
+    "alpha_zero": {
+        "method": "alpha_zero",
+        "size": 3,
+        "iterations": 10,
+        "games_per_iteration": 128,
+        "mcts_simulations": 64,
+        "hidden": 256,
+        "lr": 3e-4,
+        "batch_size": 256,
+        "update_epochs": 4,
+        "replay_size": 50_000,
+        "temperature": 1.0,
+        "seed": 0,
+        "log_every": 1,
         "device": "cpu",
     },
     "q_learning": {
@@ -201,27 +219,41 @@ def _float_payload(
     return value
 
 
-def _run_payload(payload: dict[str, Any]) -> TabularConfig | DeepRLConfig:
+def _run_payload(payload: dict[str, Any]) -> TabularConfig | DeepRLConfig | AlphaZeroConfig:
     method = str(payload.get("method", "q_learning")).strip().lower().replace("-", "_")
     if method not in RUN_DEFAULTS:
         raise HTTPException(status_code=400, detail=f"unknown method {method!r}")
     defaults = RUN_DEFAULTS[method]
-    max_size = 5 if method in {"ppo", "grpo"} else 4
+    max_size = 5 if method in {"ppo", "grpo", "alpha_zero"} else 4
     common = {
         "method": method,
         "name": payload.get("name") or None,
         "parent_run": payload.get("parent_run") or None,
         "size": _int_payload(payload, "size", int(defaults["size"]), minimum=2, maximum=max_size),
-        "episodes": _int_payload(
-            payload,
-            "episodes",
-            int(defaults["episodes"]),
-            minimum=1,
-            maximum=2_000_000,
-        ),
         "seed": _int_payload(payload, "seed", int(defaults["seed"]), minimum=0, maximum=2**31 - 1),
         "log_every": _int_payload(payload, "log_every", int(defaults["log_every"]), minimum=1, maximum=100_000),
     }
+    if method == "alpha_zero":
+        return AlphaZeroConfig(
+            **common,
+            iterations=_int_payload(payload, "iterations", int(defaults["iterations"]), minimum=1, maximum=10_000),
+            games_per_iteration=_int_payload(payload, "games_per_iteration", int(defaults["games_per_iteration"]), minimum=1, maximum=10_000),
+            mcts_simulations=_int_payload(payload, "mcts_simulations", int(defaults["mcts_simulations"]), minimum=1, maximum=10_000),
+            hidden=_int_payload(payload, "hidden", int(defaults["hidden"]), minimum=8, maximum=4096),
+            lr=_float_payload(payload, "lr", float(defaults["lr"]), minimum=1e-7, maximum=1.0),
+            batch_size=_int_payload(payload, "batch_size", int(defaults["batch_size"]), minimum=1, maximum=16384),
+            update_epochs=_int_payload(payload, "update_epochs", int(defaults["update_epochs"]), minimum=1, maximum=128),
+            replay_size=_int_payload(payload, "replay_size", int(defaults["replay_size"]), minimum=100, maximum=2_000_000),
+            temperature=_float_payload(payload, "temperature", float(defaults["temperature"]), minimum=0.0, maximum=10.0),
+            device=str(payload.get("device", defaults["device"])),
+        )
+    common["episodes"] = _int_payload(
+        payload,
+        "episodes",
+        int(defaults["episodes"]),
+        minimum=1,
+        maximum=2_000_000,
+    )
     if method in {"ppo", "grpo"}:
         return DeepRLConfig(
             **common,
@@ -436,6 +468,9 @@ ARTIFACT_FILES = {
     "metrics.jsonl",
     "latest.json",
     "artifacts.json",
+    "report_card.json",
+    "report_card.md",
+    "probe_failures.jsonl",
 }
 
 
@@ -506,10 +541,12 @@ def _on_snapshot(payload: dict[str, Any]) -> None:
         _trim_history()
 
 
-def _worker(cfg: TabularConfig | DeepRLConfig, stop_event: threading.Event) -> None:
+def _worker(cfg: TabularConfig | DeepRLConfig | AlphaZeroConfig, stop_event: threading.Event) -> None:
     try:
         if cfg.method in {"ppo", "grpo"}:
             train_deep_rl(cfg, callback=_on_snapshot, stop_event=stop_event)
+        elif cfg.method == "alpha_zero":
+            train_alpha_zero(cfg, callback=_on_snapshot, stop_event=stop_event)
         else:
             train_tabular(cfg, callback=_on_snapshot, stop_event=stop_event)
     finally:
@@ -520,7 +557,7 @@ def _worker(cfg: TabularConfig | DeepRLConfig, stop_event: threading.Event) -> N
                 _latest["running"] = False
 
 
-def _step_signature(cfg: TabularConfig | DeepRLConfig) -> str:
+def _step_signature(cfg: TabularConfig | DeepRLConfig | AlphaZeroConfig) -> str:
     payload = asdict(cfg)
     payload.pop("run_dir", None)
     return json.dumps(payload, sort_keys=True)
@@ -754,7 +791,9 @@ class DeepStepSession:
         )
 
 
-def _make_step_session(cfg: TabularConfig | DeepRLConfig) -> TabularStepSession | DeepStepSession:
+def _make_step_session(cfg: TabularConfig | DeepRLConfig | AlphaZeroConfig) -> TabularStepSession | DeepStepSession:
+    if cfg.method == "alpha_zero":
+        raise HTTPException(status_code=400, detail="step mode is not supported for AlphaZero-lite yet")
     if cfg.method in {"ppo", "grpo"}:
         return DeepStepSession(cfg)
     return TabularStepSession(cfg)
@@ -808,6 +847,7 @@ def run_defaults() -> JSONResponse:
             "groups": {
                 "tabular": ["q_learning", "sarsa", "expected_sarsa", "monte_carlo"],
                 "policy_gradient": ["ppo", "grpo"],
+                "search": ["alpha_zero"],
             },
         }
     )
@@ -920,6 +960,26 @@ def artifact(run_dir: str, file: str) -> FileResponse:
 def artifacts(run_dir: str) -> JSONResponse:
     path = _safe_run_dir(run_dir)
     return JSONResponse({"run_dir": str(path), "artifacts": _artifact_manifest(path)})
+
+
+@app.post("/api/report-card")
+async def report_card(request: Request) -> JSONResponse:
+    payload = await request.json()
+    model_id = str(payload.get("model_id") or payload.get("run_dir") or "")
+    if not model_id:
+        raise HTTPException(status_code=400, detail="model_id or run_dir is required")
+    run_dir = payload.get("run_dir")
+    report = generate_report_card(
+        model_id,
+        run_dir=run_dir,
+        size=int(payload.get("size", 3)),
+        probe_cases_per_family=max(1, min(64, int(payload.get("probe_cases_per_family", 16)))),
+        seed=int(payload.get("seed", 0)),
+        fast=bool(payload.get("fast", False)),
+    )
+    if run_dir:
+        write_report_card(report, _safe_run_dir(str(run_dir)))
+    return JSONResponse(report)
 
 
 @app.get("/api/models")

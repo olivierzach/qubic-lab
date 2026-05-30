@@ -36,6 +36,10 @@ const defaults = {
   gae_lambda: 0.95,
   opponent_mix: 'self:0.4,tactical:0.4,random:0.2',
   mcts_simulations: 64,
+  iterations: 10,
+  games_per_iteration: 128,
+  batch_size: 256,
+  replay_size: 50000,
   side_mode: 'adaptive_o',
   o_target_win_rate: 0.5,
   o_reward_weight: 1.5,
@@ -140,6 +144,7 @@ function LabApp() {
   const [error, setError] = useState('');
   const [evalGames, setEvalGames] = useState(200);
   const [evalResult, setEvalResult] = useState(null);
+  const [reportCard, setReportCard] = useState(null);
   const [stateSpaceGames, setStateSpaceGames] = useState(80);
   const [stateSpace, setStateSpace] = useState(null);
 
@@ -331,6 +336,35 @@ function LabApp() {
     }
   };
 
+  const generateReportCard = async () => {
+    if (!selectedModel || selectedModel === 'random') return;
+    setBusy('report');
+    setError('');
+    try {
+      const size = selected?.size || runConfig.size || 3;
+      const data = await api('/api/report-card', {
+        method: 'POST',
+        body: JSON.stringify({
+          model_id: selectedModel,
+          run_dir: selected?.run_dir || (selectedModel.startsWith('runs/') ? selectedModel : null),
+          size,
+          fast: true,
+          seed: runConfig.seed || 0,
+        }),
+      });
+      setReportCard(data);
+      if (selected?.run_dir || selectedModel.startsWith('runs/')) {
+        const runDir = selected?.run_dir || selectedModel;
+        const artifactsData = await apiMaybe(`/api/artifacts?run_dir=${encodeURIComponent(runDir)}`, { artifacts: [] });
+        setArtifacts(artifactsData?.artifacts || []);
+      }
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setBusy('');
+    }
+  };
+
   const sampleStateSpace = async () => {
     setBusy('state-space');
     setError('');
@@ -389,6 +423,7 @@ function LabApp() {
             <label>Eval games<input type="number" min="2" step="20" value={evalGames} onChange={(e) => setEvalGames(Number(e.target.value))} /></label>
             <div className="button-row">
               <button onClick={evaluateSelected} disabled={!selectedModel || selectedModel === 'random' || Boolean(busy)}>Evaluate</button>
+              <button onClick={generateReportCard} disabled={!selectedModel || selectedModel === 'random' || Boolean(busy)}>Report</button>
               <a className="button-link" href={`/play?model=${encodeURIComponent(selectedModel)}`}>Play selected</a>
             </div>
             <label>State samples<input type="number" min="4" max="500" step="20" value={stateSpaceGames} onChange={(e) => setStateSpaceGames(Number(e.target.value))} /></label>
@@ -400,6 +435,7 @@ function LabApp() {
           <section className="paper-stack">
             <RunSummary latest={runData.latest} analysis={analysis} />
             <EvalSummary result={evalResult} selectedModel={selectedModel} />
+            <ReportCardSummary report={reportCard} />
             <div className="lab-focus-grid">
               <section className="paper-section plot-window">
                 <MetricsChart history={runData.history || []} latest={runData.latest} />
@@ -429,24 +465,43 @@ function LabApp() {
 function RunControls({ config, onChange, busy, onStart, onStop, onStep, onResetStep }) {
   const number = (key) => (event) => onChange(key, Number(event.target.value));
   const isPolicyGradient = ['ppo', 'grpo'].includes(config.method);
+  const isAlphaZero = config.method === 'alpha_zero';
   return (
     <div className="form-grid">
       <label>Method
         <select value={config.method} onChange={(e) => onChange('method', e.target.value)}>
           <option value="ppo">PPO</option>
           <option value="grpo">GRPO</option>
+          <option value="alpha_zero">AlphaZero-lite</option>
           <option value="q_learning">Q-learning</option>
           <option value="sarsa">SARSA</option>
           <option value="expected_sarsa">Expected SARSA</option>
           <option value="monte_carlo">Monte Carlo</option>
         </select>
       </label>
-      <label>Board size<input type="number" min="2" max={isPolicyGradient ? 5 : 4} value={config.size} onChange={number('size')} /></label>
-      <label>Episodes<input type="number" min="1" step="500" value={config.episodes} onChange={number('episodes')} /></label>
+      <label>Board size<input type="number" min="2" max={(isPolicyGradient || isAlphaZero) ? 5 : 4} value={config.size} onChange={number('size')} /></label>
+      {isAlphaZero ? (
+        <>
+          <label>Iterations<input type="number" min="1" step="1" value={config.iterations || 10} onChange={number('iterations')} /></label>
+          <label>Games / iter<input type="number" min="1" step="16" value={config.games_per_iteration || 128} onChange={number('games_per_iteration')} /></label>
+        </>
+      ) : (
+        <label>Episodes<input type="number" min="1" step="500" value={config.episodes} onChange={number('episodes')} /></label>
+      )}
       <label>Log every<input type="number" min="1" step="25" value={config.log_every} onChange={number('log_every')} /></label>
-      <label>Gamma<input type="number" min="0" max="1" step="0.01" value={config.gamma} onChange={number('gamma')} /></label>
+      {!isAlphaZero && <label>Gamma<input type="number" min="0" max="1" step="0.01" value={config.gamma} onChange={number('gamma')} /></label>}
       <label>Seed<input type="number" step="1" value={config.seed} onChange={number('seed')} /></label>
-      {isPolicyGradient ? (
+      {isAlphaZero ? (
+        <>
+          <label>MCTS sims<input type="number" min="1" step="16" value={config.mcts_simulations || 64} onChange={number('mcts_simulations')} /></label>
+          <label>Hidden width<input type="number" min="8" step="16" value={config.hidden || 256} onChange={number('hidden')} /></label>
+          <label>Learning rate<input type="number" min="0" step="0.0001" value={config.lr || 0.0003} onChange={number('lr')} /></label>
+          <label>Batch size<input type="number" min="1" step="64" value={config.batch_size || 256} onChange={number('batch_size')} /></label>
+          <label>Update epochs<input type="number" min="1" step="1" value={config.update_epochs || 4} onChange={number('update_epochs')} /></label>
+          <label>Replay size<input type="number" min="100" step="1000" value={config.replay_size || 50000} onChange={number('replay_size')} /></label>
+          <label>Temperature<input type="number" min="0" step="0.1" value={config.temperature ?? 1} onChange={number('temperature')} /></label>
+        </>
+      ) : isPolicyGradient ? (
         <>
           <label>Batch episodes<input type="number" min="1" step="8" value={config.batch_episodes || 32} onChange={number('batch_episodes')} /></label>
           <label>Update epochs<input type="number" min="1" step="1" value={config.update_epochs || 4} onChange={number('update_epochs')} /></label>
@@ -488,7 +543,7 @@ function RunControls({ config, onChange, busy, onStart, onStop, onStep, onResetS
         <button onClick={onStop} disabled={busy === 'stop'}>Stop</button>
       </div>
       <div className="button-row span-2">
-        <button onClick={onStep} disabled={Boolean(busy)}>{config.method === 'ppo' || config.method === 'grpo' ? 'Step batch' : 'Step episode'}</button>
+        <button onClick={onStep} disabled={Boolean(busy) || isAlphaZero}>{config.method === 'ppo' || config.method === 'grpo' ? 'Step batch' : 'Step episode'}</button>
         <button onClick={onResetStep} disabled={busy === 'reset-step'}>Reset step</button>
       </div>
     </div>
@@ -498,7 +553,7 @@ function RunControls({ config, onChange, busy, onStart, onStop, onStep, onResetS
 function SystemInputs({ config, selected, latest, compact = false }) {
   const rows = [
     ['method', methodLabel(config.method)],
-    ['episodes', config.episodes],
+    ['episodes', config.method === 'alpha_zero' ? `${config.iterations || 0} x ${config.games_per_iteration || 0}` : config.episodes],
     ['batch', config.batch_episodes || 'n/a'],
     ['advantage', config.advantage_mode || 'n/a'],
     ['gae lambda', config.gae_lambda ?? 'n/a'],
@@ -565,10 +620,13 @@ function SnapshotViewer({ snapshot, snapshots, snapshotIndex, previousSnapshot, 
 
 function heatmapStats(heatmap) {
   const values = flattenHeatmap(heatmap).map((p) => p.value).filter((v) => Number.isFinite(v));
-  if (!values.length) return { min: -1, max: 1, maxAbs: 1 };
+  if (!values.length) return { min: -1, max: 1, maxAbs: 1, kind: 'value' };
   const min = Math.min(...values);
   const max = Math.max(...values);
-  return { min, max, maxAbs: Math.max(1e-6, Math.abs(min), Math.abs(max)), span: Math.max(1e-6, max - min) };
+  const total = values.reduce((sum, value) => sum + Math.max(0, value), 0);
+  const kind = min >= -1e-6 && max <= 1 + 1e-6 && total <= 1.02 ? 'policy' : 'value';
+  const low = kind === 'policy' ? 0 : min;
+  return { min: low, max, rawMin: min, maxAbs: Math.max(1e-6, Math.abs(low), Math.abs(max)), span: Math.max(1e-6, max - low), kind };
 }
 
 function heatmapAt(heatmap, x, y, z) {
@@ -619,6 +677,15 @@ function cellIntensity(value, stats) {
   return Math.max(0, Math.min(1, (value - stats.min) / Math.max(stats.span, 1e-6)));
 }
 
+function heatmapLabel(value, stats, compact = false) {
+  if (stats.kind === 'policy') {
+    if (value < 0.0005) return compact ? '0' : '0.0%';
+    if (value < 0.01) return `${(value * 100).toFixed(2)}%`;
+    return `${Math.round(value * 100)}%`;
+  }
+  return fixed(value, compact ? 2 : (Math.abs(value) < 0.01 ? 4 : 3));
+}
+
 function ValueHeatmap({ snapshot, previous }) {
   const heatmap = snapshot?.heatmap;
   if (!heatmap) {
@@ -632,7 +699,7 @@ function ValueHeatmap({ snapshot, previous }) {
     <div className="value-heatmap">
       <div className="heatmap-meta">
         <span>episode {snapshot?.episode || 0}</span>
-        <span>range {fixed(stats.min, 4)} to {fixed(stats.max, 4)}</span>
+        <span>{stats.kind === 'policy' ? 'policy mass' : 'value'} {heatmapLabel(stats.min, stats)} to {heatmapLabel(stats.max, stats)}</span>
         <span>{snapshot?.method ? methodLabel(snapshot.method) : 'position'}</span>
       </div>
       <div className="layer-grid">
@@ -654,8 +721,8 @@ function ValueHeatmap({ snapshot, previous }) {
                       title={`(${x}, ${y}, ${z}) value ${fixed(current, 5)}${previous?.heatmap ? ` delta ${delta > 0 ? '+' : ''}${fixed(delta, 5)}` : ''}`}
                       style={{ background: cellTone(current, stats) }}
                     >
-                      <b>{fixed(current, Math.abs(current) < 0.01 ? 4 : 3)}</b>
-                      {policyMove && <em>#{policyMove.rank} {fixed(policyMove.prob ?? policyMove.value, 2)}</em>}
+                      <b>{heatmapLabel(current, stats)}</b>
+                      {policyMove && <em>#{policyMove.rank} {heatmapLabel(policyMove.prob ?? policyMove.value ?? 0, stats, true)}</em>}
                       {showDelta && <small>{delta > 0 ? '+' : ''}{fixed(delta, 3)}</small>}
                     </div>
                   );
@@ -666,9 +733,9 @@ function ValueHeatmap({ snapshot, previous }) {
         ))}
       </div>
       <div className="heatmap-legend">
-        <span className="low">low {fixed(stats.min, 3)}</span>
-        <span className="mid">mid {fixed((stats.min + stats.max) / 2, 3)}</span>
-        <span className="high">high {fixed(stats.max, 3)}</span>
+        <span className="low">low {heatmapLabel(stats.min, stats)}</span>
+        <span className="mid">mid {heatmapLabel((stats.min + stats.max) / 2, stats)}</span>
+        <span className="high">high {heatmapLabel(stats.max, stats)}</span>
       </div>
     </div>
   );
@@ -702,7 +769,7 @@ function LayerStackView({ snapshot }) {
                       title={`(${x}, ${y}, ${z}) value ${fixed(current, 4)}`}
                       style={{ background: cellTone(current, stats) }}
                     >
-                      <span>{fixed(current, size <= 3 ? 2 : 1)}</span>
+                      <span>{heatmapLabel(current, stats, true)}</span>
                       {ranked && <b>{ranked.rank}</b>}
                     </div>
                   );
@@ -1097,7 +1164,7 @@ function drawLabBoard(ctx, canvas, snapshot, view) {
     } else if (size <= 4) {
       ctx.fillStyle = intensity > 0.72 ? '#111318' : '#f0eadc';
       ctx.font = '700 12px ui-monospace, SFMono-Regular, Menlo, monospace';
-      ctx.fillText(fixed(p.value, size <= 3 ? 2 : 1), p.screen.x, p.screen.y + (ranked ? 8 : 0));
+      ctx.fillText(heatmapLabel(p.value, stats, true), p.screen.x, p.screen.y + (ranked ? 8 : 0));
     }
     if (ranked) {
       ctx.fillStyle = '#d5a447';
@@ -1115,7 +1182,7 @@ function drawLabBoard(ctx, canvas, snapshot, view) {
   ctx.fillStyle = '#f0eadc';
   ctx.font = '18px Georgia, serif';
   const best = [...policy.values()][0];
-  ctx.fillText(best ? `best (${best.x},${best.y},${best.z})  p=${fixed(best.prob ?? best.value, 3)}  value=${fixed(snapshot.value)}` : 'value surface', 30, 36);
+  ctx.fillText(best ? `best (${best.x},${best.y},${best.z})  p=${heatmapLabel(best.prob ?? best.value ?? 0, stats)}  value=${fixed(snapshot.value)}` : 'value surface', 30, 36);
   ctx.fillStyle = '#a9a192';
   ctx.font = '12px ui-monospace, SFMono-Regular, Menlo, monospace';
   ctx.fillText(`n=${size}  gold=policy rank  green/red=value`, 30, h - 24);
@@ -1630,6 +1697,30 @@ function EvalSummary({ result, selectedModel }) {
           <span>L {row.opponentWins}</span>
           <span>X {pct(row.asXRate)}</span>
           <span>O {pct(row.asORate)}</span>
+        </React.Fragment>
+      ))}
+    </section>
+  );
+}
+
+function ReportCardSummary({ report }) {
+  if (!report) return null;
+  const families = Object.entries(report.probes?.families || {});
+  const rows = report.eval_ladder?.rows || [];
+  return (
+    <section className="eval-strip report-strip">
+      <span>report</span>
+      <b>{pct(report.probes?.pass_rate)}</b>
+      {families.slice(0, 4).map(([name, row]) => (
+        <React.Fragment key={name}>
+          <span>{name.replaceAll('_', ' ')}</span>
+          <b>{pct(row.pass_rate)}</b>
+        </React.Fragment>
+      ))}
+      {rows.slice(0, 4).map((row) => (
+        <React.Fragment key={row.opponent}>
+          <span>vs {row.opponent}</span>
+          <b>{pct(row.win_rate)}</b>
         </React.Fragment>
       ))}
     </section>
