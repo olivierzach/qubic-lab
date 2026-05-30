@@ -557,17 +557,19 @@ function ValueHeatmap({ snapshot, previous }) {
                 row.map((value, x) => {
                   const current = Number(value || 0);
                   const delta = current - heatmapAt(previous?.heatmap, x, y, z);
+                  const showDelta = Boolean(previous?.heatmap) && Math.abs(delta) >= 0.0005;
                   const isTop = top.some((m) => m.x === x && m.y === y && m.z === z);
                   const policyMove = policy.get(`${x}-${y}-${z}`);
                   return (
                     <div
                       className={isTop ? 'heat-cell top-cell' : 'heat-cell'}
                       key={`${x}-${y}-${z}`}
+                      title={`(${x}, ${y}, ${z}) value ${fixed(current, 5)}${previous?.heatmap ? ` delta ${delta > 0 ? '+' : ''}${fixed(delta, 5)}` : ''}`}
                       style={{ background: cellTone(current, stats) }}
                     >
                       <b>{fixed(current, Math.abs(current) < 0.01 ? 4 : 3)}</b>
                       {policyMove && <em>#{policyMove.rank} {fixed(policyMove.prob ?? policyMove.value, 2)}</em>}
-                      <small>{delta === 0 ? '0' : `${delta > 0 ? '+' : ''}${fixed(delta, 3)}`}</small>
+                      {showDelta && <small>{delta > 0 ? '+' : ''}{fixed(delta, 3)}</small>}
                     </div>
                   );
                 }),
