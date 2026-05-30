@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
+import demoRun from './demoRun.json';
 import './styles.css';
 
 const DEMO_MODE = import.meta.env.VITE_STATIC_DEMO === '1'
@@ -10,6 +11,7 @@ const appHref = (path = '/') => {
   if (DEMO_MODE) return `${BASE_PATH || '/'}#${normalized}`;
   return `${BASE_PATH}${normalized}` || '/';
 };
+const assetHref = (path = '/') => `${BASE_PATH}${path.startsWith('/') ? path : `/${path}`}` || path;
 
 const api = async (path, options = {}) => {
   if (DEMO_MODE) return demoApi(path, options);
@@ -222,45 +224,27 @@ function demoAnalyze(board, player = 1, modelId = 'demo-agent') {
   };
 }
 
-function demoHistory() {
-  const size = 3;
-  return Array.from({ length: 80 }, (_, index) => {
-    const t = (index + 1) / 80;
-    const board = emptyBoard(size);
-    if (index > 18) board[1][1][1] = 1;
-    if (index > 32) board[1][1][0] = -1;
-    if (index > 48) board[1][0][1] = 1;
-    const analysis = demoAnalyze(board, index % 2 ? -1 : 1, 'demo-agent');
-    return {
-      ...analysis,
-      run_dir: 'demo-alpha-zero-lite',
-      run_id: 'demo-alpha-zero-lite',
-      method: 'alpha_zero',
-      episode: Math.round(t * 240000),
-      episodes: 240000,
-      recent_model: {
-        window: 100,
-        win_rate: 0.18 + 0.63 * t + 0.04 * Math.sin(index / 5),
-        loss_rate: 0.8 - 0.6 * t,
-        draw_rate: Math.max(0, 0.02 * Math.sin(index / 7)),
-        as_x_win_rate: Math.min(0.98, 0.35 + 0.58 * t),
-        as_o_win_rate: Math.min(0.82, 0.12 + 0.5 * t),
-      },
-      value: -0.12 + 0.94 * t,
-      entropy: Math.max(0.08, 1.7 - 1.15 * t),
-      approx_kl: 0.00001 + 0.0009 * Math.abs(Math.sin(index / 8)) * t,
-      config: { ...defaults, method: 'alpha_zero', episodes: 240000 },
-    };
-  });
-}
-
-const DEMO_HISTORY = demoHistory();
-const DEMO_LATEST = DEMO_HISTORY[DEMO_HISTORY.length - 1];
+const DEMO_HISTORY = demoRun.history || [];
+const DEMO_LATEST = demoRun.latest || DEMO_HISTORY[DEMO_HISTORY.length - 1];
+const DEMO_RUN_ID = demoRun.source?.run_id || DEMO_LATEST?.run_id || 'actual-run';
+const ACTUAL_DEMO_MODEL_ID = `actual-ppo-${DEMO_RUN_ID}`;
 const DEMO_MODELS = [
-  { id: 'demo-agent', label: 'Demo agent', kind: 'neural', size: 3, episode: DEMO_LATEST.episode },
+  {
+    id: ACTUAL_DEMO_MODEL_ID,
+    label: `Actual PPO run ${DEMO_RUN_ID}`,
+    kind: 'neural snapshot',
+    size: DEMO_LATEST?.config?.size || demoRun.config?.size || 3,
+    episode: DEMO_LATEST?.episode,
+    run_dir: DEMO_LATEST?.run_dir,
+    opponent_mix: demoRun.config?.opponent_mix,
+  },
   { id: 'tactical', label: 'Tactical baseline', kind: 'baseline', size: 3 },
   { id: 'random', label: 'Random baseline', kind: 'baseline', size: 3 },
 ];
+const demoArtifacts = () => (demoRun.artifacts || []).map((item) => ({
+  ...item,
+  url: item.url || assetHref(`/demo/${item.file}`),
+}));
 
 function demoTournament(modelIds, size, games) {
   const ids = modelIds?.length ? modelIds : ['demo-agent', 'tactical'];
@@ -319,33 +303,22 @@ async function demoApi(path, options = {}) {
   const body = options.body ? JSON.parse(options.body) : {};
   if (url.pathname === '/api/run/defaults') return { defaults: { ppo: defaults, grpo: { ...defaults, method: 'grpo' }, alpha_zero: { ...defaults, method: 'alpha_zero' } } };
   if (url.pathname === '/api/models') return { models: DEMO_MODELS };
-  if (url.pathname === '/api/runs') return { runs: [{ ...DEMO_LATEST, run_dir: 'demo-alpha-zero-lite', config: DEMO_LATEST.config }] };
+  if (url.pathname === '/api/runs') return { runs: [{ ...DEMO_LATEST, run_dir: DEMO_LATEST?.run_dir || demoRun.source?.run_dir, config: demoRun.config || DEMO_LATEST?.config }] };
   if (url.pathname === '/api/run' && options.method === 'POST') return { ok: true, latest: DEMO_LATEST };
-  if (url.pathname === '/api/run') return { latest: DEMO_LATEST, history: DEMO_HISTORY, artifacts: [] };
+  if (url.pathname === '/api/run') return { latest: DEMO_LATEST, history: DEMO_HISTORY, artifacts: demoArtifacts() };
   if (url.pathname === '/api/state') return { running: false, latest: DEMO_LATEST, history: DEMO_HISTORY };
-  if (url.pathname === '/api/model/timeline') return { timeline: DEMO_HISTORY.filter((_, i) => i % 5 === 0), artifacts: [] };
-  if (url.pathname === '/api/artifacts') return { artifacts: [] };
+  if (url.pathname === '/api/model/timeline') return { timeline: DEMO_HISTORY, artifacts: demoArtifacts() };
+  if (url.pathname === '/api/artifacts') return { artifacts: demoArtifacts() };
   if (url.pathname === '/api/stop' || url.pathname === '/api/step/reset') return { ok: true };
-  if (url.pathname === '/api/step') return { latest: DEMO_LATEST, history: DEMO_HISTORY, artifacts: [] };
-  if (url.pathname === '/api/analyze/position') return demoAnalyze(body.board || emptyBoard(body.size || 3), body.player || 1, body.model_id || 'demo-agent');
+  if (url.pathname === '/api/step') return { latest: DEMO_LATEST, history: DEMO_HISTORY, artifacts: demoArtifacts() };
+  if (url.pathname === '/api/analyze/position') {
+    const board = body.board || emptyBoard(body.size || 3);
+    const isEmpty = demoLegalMoves(board).length === board.length ** 3;
+    if (body.model_id === ACTUAL_DEMO_MODEL_ID && isEmpty) return { ...DEMO_LATEST, model_id: ACTUAL_DEMO_MODEL_ID, board, player: body.player || 1 };
+    return demoAnalyze(board, body.player || 1, body.model_id || ACTUAL_DEMO_MODEL_ID);
+  }
   if (url.pathname === '/api/eval/tournament') return demoTournament(body.model_ids, body.size || 3, body.games || 200);
-  if (url.pathname === '/api/report-card') return {
-    model_id: body.model_id || 'demo-agent',
-    probes: {
-      pass_rate: 0.88,
-      families: {
-        immediate_win: { pass_rate: 0.96 },
-        immediate_block: { pass_rate: 0.92 },
-        fork_pressure: { pass_rate: 0.74 },
-      },
-    },
-    eval_ladder: {
-      rows: [
-        { opponent: 'random', win_rate: 0.94 },
-        { opponent: 'tactical', win_rate: 0.61 },
-      ],
-    },
-  };
+  if (url.pathname === '/api/report-card') return demoRun.report || { model_id: body.model_id || ACTUAL_DEMO_MODEL_ID };
   if (url.pathname === '/api/state-space/sample') return demoStateSpace(body.games);
   if (url.pathname === '/api/play/new') {
     const size = body.size || 3;
@@ -718,7 +691,7 @@ function LabApp() {
   return (
     <>
       <main className="lab-page paper-width compact-lab">
-        {DEMO_MODE && <div className="message">Static demo mode: browser-side play, analysis, and evaluation are active; long training runs require the Python server.</div>}
+        {DEMO_MODE && <div className="message">Static demo mode: lab plots and heatmaps use actual run {DEMO_RUN_ID}; browser play/eval uses lightweight baselines because model.pt is not executed on Pages.</div>}
         {(error || notice) && <div className={error ? 'message error' : 'message'}>{error || notice}</div>}
 
         <section className="lab-grid">

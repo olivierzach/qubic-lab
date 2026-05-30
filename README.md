@@ -97,8 +97,9 @@ you can build lineage from coarse sweeps into longer offline runs.
 
 Hosted static demo: https://olivierzach.github.io/qubic-lab/
 
-The hosted demo runs play, evaluation, and position analysis in the browser with a
-sample run timeline. Long offline training still runs through the Python server.
+The hosted lab plots and heatmaps use the real `runs/20260530_010720` PPO run
+from this repo. Browser play/evaluation uses lightweight client-side baselines;
+long offline training and `model.pt` inference still run through the Python server.
 
 Build and run the local dashboard:
 
