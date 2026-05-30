@@ -52,7 +52,10 @@ const moveCoord = (move, size) => ({
   x: move % size,
 });
 
-const pct = (value) => `${Math.round((Number(value) || 0) * 100)}%`;
+const pct = (value) => {
+  const number = Number(value);
+  return Number.isFinite(number) ? `${Math.round(number * 100)}%` : '--';
+};
 const fixed = (value, places = 3) => Number(value || 0).toFixed(places);
 const methodLabel = (method) => String(method || 'run').toUpperCase();
 const shortMix = (mix) => {
@@ -1294,6 +1297,7 @@ function getMetricModel(history, latest, w, h) {
   const valueItems = [...values((d) => d.value ?? d.mean_value), ...values((d) => Math.abs(Number(d.mean_abs_update || 0)))];
   const entropyItems = values((d) => d.entropy);
   const klItems = values((d) => d.approx_kl).filter((v) => v > 0);
+  const hasModelMetrics = history.some((d) => Number(d.recent_model?.window || 0) > 0) || Number(latest?.recent_model?.window || 0) > 0;
   const margin = { left: 64, right: 22, top: 34, bottom: 34 };
   const gap = 30;
   const panelH = (h - margin.top - margin.bottom - gap * 2) / 3;
@@ -1317,7 +1321,13 @@ function getMetricModel(history, latest, w, h) {
     },
   ];
   const defs = [
-    [
+    hasModelMetrics ? [
+      { label: 'M', color: '#62b08d', get: (d) => d.recent_model?.win_rate },
+      { label: 'Opp', color: '#d06a58', get: (d) => d.recent_model?.loss_rate },
+      { label: 'D', color: '#76a8cf', get: (d) => d.recent_model?.draw_rate },
+      { label: 'Xside', color: '#d5a447', get: (d) => d.recent_model?.as_x_win_rate },
+      { label: 'Oside', color: '#b79adb', get: (d) => d.recent_model?.as_o_win_rate },
+    ] : [
       { label: 'X', color: '#62b08d', get: (d) => d.recent?.x_win_rate },
       { label: 'O', color: '#d06a58', get: (d) => d.recent?.o_win_rate },
       { label: 'D', color: '#76a8cf', get: (d) => d.recent?.draw_rate },
@@ -1522,14 +1532,28 @@ function legend(ctx, p, history, items) {
 
 function RunSummary({ latest, analysis }) {
   const recent = latest?.recent || {};
+  const modelRecent = latest?.recent_model || {};
+  const hasModelMetrics = Number(modelRecent.window || 0) > 0;
   const top = (latest?.top_moves || analysis?.top_moves || []).slice(0, 4);
   return (
     <section className="summary-grid">
       <Metric label="Method" value={latest?.method ? methodLabel(latest.method) : 'none'} />
       <Metric label="Episode" value={latest?.episode || 0} />
-      <Metric label="X win" value={pct(recent.x_win_rate)} />
-      <Metric label="O win" value={pct(recent.o_win_rate)} />
-      <Metric label="Draw" value={pct(recent.draw_rate)} />
+      {hasModelMetrics ? (
+        <>
+          <Metric label="Model win" value={pct(modelRecent.win_rate)} />
+          <Metric label="Opp win" value={pct(modelRecent.loss_rate)} />
+          <Metric label="Draw" value={pct(modelRecent.draw_rate)} />
+          <Metric label="As X" value={pct(modelRecent.as_x_win_rate)} />
+          <Metric label="As O" value={pct(modelRecent.as_o_win_rate)} />
+        </>
+      ) : (
+        <>
+          <Metric label="X win" value={pct(recent.x_win_rate)} />
+          <Metric label="O win" value={pct(recent.o_win_rate)} />
+          <Metric label="Draw" value={pct(recent.draw_rate)} />
+        </>
+      )}
       <Metric label="Value" value={fixed(latest?.value ?? analysis?.value)} />
       <div className="metric policy-cell">
         <span>Top policy moves</span>
@@ -1554,7 +1578,20 @@ function EvalSummary({ result, selectedModel }) {
       const draws = wins.draw || 0;
       const games = match.games || result.games || Math.max(1, modelWins + opponentWins + draws);
       const score = (modelWins + 0.5 * draws) / Math.max(1, games);
-      return { opponent, modelWins, opponentWins, draws, games, score };
+      const asX = (match.records || []).filter((record) => record.x_model === selectedModel);
+      const asO = (match.records || []).filter((record) => record.o_model === selectedModel);
+      const asXWins = asX.filter((record) => record.winner === selectedModel).length;
+      const asOWins = asO.filter((record) => record.winner === selectedModel).length;
+      return {
+        opponent,
+        modelWins,
+        opponentWins,
+        draws,
+        games,
+        score,
+        asXRate: asX.length ? asXWins / asX.length : null,
+        asORate: asO.length ? asOWins / asO.length : null,
+      };
     })
     .filter(Boolean);
   if (!rows.length) return null;
@@ -1568,6 +1605,8 @@ function EvalSummary({ result, selectedModel }) {
           <span>W {row.modelWins}</span>
           <span>D {row.draws}</span>
           <span>L {row.opponentWins}</span>
+          <span>X {pct(row.asXRate)}</span>
+          <span>O {pct(row.asORate)}</span>
         </React.Fragment>
       ))}
     </section>

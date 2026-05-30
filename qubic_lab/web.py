@@ -462,6 +462,7 @@ def _timeline_for_run(path: Path) -> dict[str, Any]:
                 "heatmap": item.get("heatmap"),
                 "top_moves": item.get("top_moves"),
                 "recent": item.get("recent"),
+                "recent_model": item.get("recent_model"),
                 "value": item.get("value"),
                 "policy_loss": item.get("policy_loss"),
                 "value_loss": item.get("value_loss"),
@@ -654,6 +655,7 @@ class DeepStepSession:
         self.model = PolicyValueNet(self.cfg.size, self.cfg.hidden).to(self.cfg.device)
         self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=self.cfg.lr)
         self.outcomes: list[int] = []
+        self.episode_infos: list[dict[str, Any]] = []
         self.episode = 0
         self.latest: dict[str, Any] | None = None
         self.losses = {
@@ -682,10 +684,11 @@ class DeepStepSession:
         for group in range(self.cfg.batch_episodes):
             if self.episode >= self.cfg.episodes:
                 break
-            steps, outcome = play_episode(self.model, self.cfg.size, self.rng, self.cfg)
+            steps, outcome, info = play_episode(self.model, self.cfg.size, self.rng, self.cfg)
             batch_steps.extend(steps)
             group_ids.extend([group] * len(steps))
             self.outcomes.append(outcome)
+            self.episode_infos.append(info)
             self.episode += 1
 
         if batch_steps:
@@ -697,6 +700,7 @@ class DeepStepSession:
             self.run_dir,
             self.episode,
             self.outcomes,
+            self.episode_infos,
             self.losses,
             running=self.episode < self.cfg.episodes,
         )

@@ -379,7 +379,14 @@ def evaluate_match(a_id: str, b_id: str, *, size: int, games: int, seed: int) ->
                     winner_model = players[int(winner)]
                     wins[winner_model.record.id] += 1
                     winner_id = winner_model.record.id
-                records.append({"game": game_idx, "winner": winner_id})
+                records.append(
+                    {
+                        "game": game_idx,
+                        "winner": winner_id,
+                        "x_model": players[1].record.id,
+                        "o_model": players[-1].record.id,
+                    }
+                )
                 break
     return {"a": a_id, "b": b_id, "games": games, "wins": wins, "records": records}
 

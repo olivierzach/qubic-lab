@@ -103,7 +103,7 @@ def play_episode(
     size: int,
     rng: np.random.Generator,
     cfg: DeepRLConfig,
-) -> tuple[list[PolicyStep], int]:
+) -> tuple[list[PolicyStep], int, dict]:
     state = State.new(size)
     steps: list[PolicyStep] = []
     opponent_id = _sample_opponent(cfg, rng)
@@ -129,7 +129,8 @@ def play_episode(
                             player=step.player,
                         )
                     )
-                return patched, int(winner or 0)
+                outcome = int(winner or 0)
+                return patched, outcome, _episode_info(opponent_id, learner_player, outcome)
             continue
 
         action, logp, value, obs, mask = select_action(model, state, rng, temperature=cfg.temperature, device=cfg.device)
@@ -163,8 +164,24 @@ def play_episode(
                         player=step.player,
                     )
                 )
-            return patched, int(winner or 0)
+            outcome = int(winner or 0)
+            return patched, outcome, _episode_info(opponent_id, learner_player, outcome)
         state = next_state
+
+
+def _episode_info(opponent_id: str, learner_player: int, winner: int) -> dict:
+    if opponent_id == "self":
+        return {"opponent_id": opponent_id, "learner_player": None, "learner_result": None, "winner": winner}
+    if winner == 0:
+        result = 0
+    else:
+        result = 1 if winner == learner_player else -1
+    return {
+        "opponent_id": opponent_id,
+        "learner_player": int(learner_player),
+        "learner_result": result,
+        "winner": winner,
+    }
 
 
 def _to_tensors(steps: list[PolicyStep], device: str) -> dict[str, torch.Tensor]:
@@ -253,6 +270,7 @@ def _snapshot(
     run_dir: Path,
     episode: int,
     outcomes: list[int],
+    episode_infos: list[dict],
     losses: dict[str, float],
     running: bool,
 ) -> dict:
@@ -261,6 +279,15 @@ def _snapshot(
     x_wins = sum(1 for outcome in recent if outcome == 1)
     o_wins = sum(1 for outcome in recent if outcome == -1)
     draws = sum(1 for outcome in recent if outcome == 0)
+    model_recent = [info for info in episode_infos[-200:] if info.get("learner_result") is not None]
+    model_denom = len(model_recent)
+    model_wins = sum(1 for info in model_recent if info.get("learner_result") == 1)
+    model_losses = sum(1 for info in model_recent if info.get("learner_result") == -1)
+    model_draws = sum(1 for info in model_recent if info.get("learner_result") == 0)
+    model_x = [info for info in model_recent if info.get("learner_player") == 1]
+    model_o = [info for info in model_recent if info.get("learner_player") == -1]
+    model_x_wins = sum(1 for info in model_x if info.get("learner_result") == 1)
+    model_o_wins = sum(1 for info in model_o if info.get("learner_result") == 1)
     opening = empty_board_policy_analysis(model, cfg.size, device=cfg.device)
     return {
         "running": running,
@@ -281,6 +308,16 @@ def _snapshot(
             "o_win_rate": o_wins / denom,
             "draw_rate": draws / denom,
         },
+        "recent_model": {
+            "window": model_denom,
+            "win_rate": model_wins / model_denom if model_denom else None,
+            "loss_rate": model_losses / model_denom if model_denom else None,
+            "draw_rate": model_draws / model_denom if model_denom else None,
+            "as_x_games": len(model_x),
+            "as_x_win_rate": model_x_wins / len(model_x) if model_x else None,
+            "as_o_games": len(model_o),
+            "as_o_win_rate": model_o_wins / len(model_o) if model_o else None,
+        },
         "value": opening["value"],
         "heatmap": opening["heatmap"],
         "top_moves": opening["top_moves"],
@@ -290,11 +327,13 @@ def _snapshot(
 
 def _write_analysis(run_dir: Path, latest: dict) -> None:
     recent = latest["recent"]
+    model_recent = latest.get("recent_model", {})
     analysis = {
         "run_id": latest["run_id"],
         "method": latest["method"],
         "episodes": latest["episode"],
         "final_recent": recent,
+        "final_recent_model": model_recent,
         "policy_loss": latest.get("policy_loss"),
         "value_loss": latest.get("value_loss"),
         "entropy": latest.get("entropy"),
@@ -311,6 +350,9 @@ def _write_analysis(run_dir: Path, latest: dict) -> None:
                 f"- Recent X win rate: `{recent['x_win_rate']:.3f}`",
                 f"- Recent O win rate: `{recent['o_win_rate']:.3f}`",
                 f"- Recent draw rate: `{recent['draw_rate']:.3f}`",
+                f"- Recent model win rate: `{model_recent.get('win_rate') if model_recent.get('win_rate') is not None else 'n/a'}`",
+                f"- Recent model-as-X win rate: `{model_recent.get('as_x_win_rate') if model_recent.get('as_x_win_rate') is not None else 'n/a'}`",
+                f"- Recent model-as-O win rate: `{model_recent.get('as_o_win_rate') if model_recent.get('as_o_win_rate') is not None else 'n/a'}`",
                 f"- Policy loss: `{latest.get('policy_loss', 0.0):.5f}`",
                 f"- Value loss: `{latest.get('value_loss', 0.0):.5f}`",
                 f"- Entropy: `{latest.get('entropy', 0.0):.5f}`",
@@ -341,6 +383,7 @@ def train_deep_rl(
     model = PolicyValueNet(cfg.size, cfg.hidden).to(cfg.device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=cfg.lr)
     outcomes: list[int] = []
+    episode_infos: list[dict] = []
     episode = 0
     losses = {"loss": math.nan, "policy_loss": math.nan, "value_loss": math.nan, "entropy": math.nan, "approx_kl": math.nan}
 
@@ -353,22 +396,24 @@ def train_deep_rl(
         for group in range(cfg.batch_episodes):
             if episode >= cfg.episodes:
                 break
-            steps, outcome = play_episode(model, cfg.size, np_rng, cfg)
+            steps, outcome, info = play_episode(model, cfg.size, np_rng, cfg)
             batch_steps.extend(steps)
             group_ids.extend([group] * len(steps))
             outcomes.append(outcome)
+            episode_infos.append(info)
             episode += 1
 
-        losses = update_policy(model, optimizer, batch_steps, np.asarray(group_ids), cfg)
+        if batch_steps:
+            losses = update_policy(model, optimizer, batch_steps, np.asarray(group_ids), cfg)
 
         if episode == 1 or episode % cfg.log_every < cfg.batch_episodes or episode >= cfg.episodes:
-            latest = _snapshot(cfg, model, run_dir, episode, outcomes, losses, running=True)
+            latest = _snapshot(cfg, model, run_dir, episode, outcomes, episode_infos, losses, running=True)
             append_jsonl(run_dir / "metrics.jsonl", latest)
             write_json(run_dir / "latest.json", latest)
             if callback is not None:
                 callback(latest)
 
-    latest = _snapshot(cfg, model, run_dir, episode, outcomes, losses, running=False)
+    latest = _snapshot(cfg, model, run_dir, episode, outcomes, episode_infos, losses, running=False)
     write_json(run_dir / "latest.json", latest)
     torch.save({"model": model.state_dict(), "config": asdict(cfg)}, run_dir / "model.pt")
     metrics = load_metrics(run_dir / "metrics.jsonl")

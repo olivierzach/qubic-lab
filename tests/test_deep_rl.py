@@ -49,4 +49,7 @@ def test_deep_ppo_trains_against_tactical_mix(tmp_path: Path):
 
     latest = json.loads((run_dir / "latest.json").read_text())
     assert latest["config"]["opponent_mix"] == "tactical"
+    assert latest["recent_model"]["window"] > 0
+    assert latest["recent_model"]["win_rate"] is not None
+    assert latest["recent_model"]["as_x_games"] + latest["recent_model"]["as_o_games"] == latest["recent_model"]["window"]
     assert (run_dir / "model.pt").exists()
