@@ -76,6 +76,9 @@ RUN_DEFAULTS: dict[str, dict[str, Any]] = {
         "max_grad_norm": 1.0,
         "temperature": 1.0,
         "opponent_mix": "self:0.4,tactical:0.4,random:0.2",
+        "side_mode": "adaptive_o",
+        "o_target_win_rate": 0.5,
+        "o_reward_weight": 1.5,
         "seed": 0,
         "log_every": 100,
         "device": "cpu",
@@ -95,6 +98,9 @@ RUN_DEFAULTS: dict[str, dict[str, Any]] = {
         "max_grad_norm": 1.0,
         "temperature": 1.0,
         "opponent_mix": "self:0.4,tactical:0.4,random:0.2",
+        "side_mode": "adaptive_o",
+        "o_target_win_rate": 0.5,
+        "o_reward_weight": 1.5,
         "seed": 0,
         "log_every": 100,
         "device": "cpu",
@@ -224,6 +230,9 @@ def _run_payload(payload: dict[str, Any]) -> TabularConfig | DeepRLConfig:
             max_grad_norm=_float_payload(payload, "max_grad_norm", float(defaults["max_grad_norm"]), minimum=0.01, maximum=100.0),
             temperature=_float_payload(payload, "temperature", float(defaults["temperature"]), minimum=0.01, maximum=10.0),
             opponent_mix=str(payload.get("opponent_mix", defaults["opponent_mix"])),
+            side_mode=str(payload.get("side_mode", defaults["side_mode"])),
+            o_target_win_rate=_float_payload(payload, "o_target_win_rate", float(defaults["o_target_win_rate"]), minimum=0.0, maximum=1.0),
+            o_reward_weight=_float_payload(payload, "o_reward_weight", float(defaults["o_reward_weight"]), minimum=0.1, maximum=10.0),
             device=str(payload.get("device", defaults["device"])),
         )
     return TabularConfig(
@@ -684,7 +693,7 @@ class DeepStepSession:
         for group in range(self.cfg.batch_episodes):
             if self.episode >= self.cfg.episodes:
                 break
-            steps, outcome, info = play_episode(self.model, self.cfg.size, self.rng, self.cfg)
+            steps, outcome, info = play_episode(self.model, self.cfg.size, self.rng, self.cfg, self.episode_infos)
             batch_steps.extend(steps)
             group_ids.extend([group] * len(steps))
             self.outcomes.append(outcome)

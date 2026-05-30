@@ -33,6 +33,9 @@ const defaults = {
   entropy_coef: 0.02,
   value_coef: 0.5,
   opponent_mix: 'self:0.4,tactical:0.4,random:0.2',
+  side_mode: 'adaptive_o',
+  o_target_win_rate: 0.5,
+  o_reward_weight: 1.5,
   alpha: 0.25,
   epsilon: 0.35,
   epsilon_min: 0.03,
@@ -450,6 +453,16 @@ function RunControls({ config, onChange, busy, onStart, onStop, onStep, onResetS
           <label>Entropy coef<input type="number" min="0" step="0.005" value={config.entropy_coef || 0} onChange={number('entropy_coef')} /></label>
           <label>Value coef<input type="number" min="0" step="0.05" value={config.value_coef || 0} onChange={number('value_coef')} /></label>
           <label className="span-2">Opponent mix<input value={config.opponent_mix || 'self'} onChange={(e) => onChange('opponent_mix', e.target.value)} /></label>
+          <label>Side mode
+            <select value={config.side_mode || 'balanced'} onChange={(e) => onChange('side_mode', e.target.value)}>
+              <option value="balanced">Balanced</option>
+              <option value="adaptive_o">Adaptive O</option>
+              <option value="o_only">O only</option>
+              <option value="x_only">X only</option>
+            </select>
+          </label>
+          <label>O target<input type="number" min="0" max="1" step="0.05" value={config.o_target_win_rate ?? 0.5} onChange={number('o_target_win_rate')} /></label>
+          <label>O reward weight<input type="number" min="0.1" max="10" step="0.1" value={config.o_reward_weight ?? 1.5} onChange={number('o_reward_weight')} /></label>
         </>
       ) : (
         <>
@@ -477,6 +490,7 @@ function SystemInputs({ config, selected, latest, compact = false }) {
     ['episodes', config.episodes],
     ['batch', config.batch_episodes || 'n/a'],
     ['opponents', config.opponent_mix || 'self'],
+    ['side mode', config.side_mode || 'balanced'],
     ['log every', config.log_every],
     ['lr / alpha', config.lr || config.alpha || 'n/a'],
     ['model', selected?.label || selected?.id || 'none'],

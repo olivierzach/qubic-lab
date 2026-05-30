@@ -46,13 +46,16 @@ class DeepRLConfig:
     max_grad_norm: float = 1.0
     temperature: float = 1.0
     opponent_mix: str = "self"
+    side_mode: str = "balanced"
+    o_target_win_rate: float = 0.5
+    o_reward_weight: float = 1.0
     seed: int = 0
     log_every: int = 100
     run_dir: str | None = None
     device: str = "cpu"
 
 
-def _episode_returns(steps: list[PolicyStep], winner: int | None, gamma: float) -> np.ndarray:
+def _episode_returns(steps: list[PolicyStep], winner: int | None, gamma: float, reward_weight: float = 1.0) -> np.ndarray:
     returns = []
     horizon = max(1, len(steps) - 1)
     for i, step in enumerate(steps):
@@ -60,7 +63,7 @@ def _episode_returns(steps: list[PolicyStep], winner: int | None, gamma: float) 
             ret = 0.0
         else:
             sign = 1.0 if step.player == winner else -1.0
-            ret = sign * (gamma ** (horizon - i))
+            ret = reward_weight * sign * (gamma ** (horizon - i))
         returns.append(ret)
     return np.asarray(returns, dtype=np.float32)
 
@@ -98,23 +101,52 @@ def _opponent_move(opponent_id: str, model: PolicyValueNet, state: State, rng: n
     return load_model(opponent_id).choose_move(state, py_rng, greedy=True)
 
 
+def _recent_o_win_rate(episode_infos: list[dict], window: int = 200) -> float | None:
+    recent_o = [
+        info for info in episode_infos[-window:]
+        if info.get("learner_player") == -1 and info.get("learner_result") is not None
+    ]
+    if not recent_o:
+        return None
+    return sum(1 for info in recent_o if info.get("learner_result") == 1) / len(recent_o)
+
+
+def _learner_player(cfg: DeepRLConfig, rng: np.random.Generator, episode_infos: list[dict] | None = None) -> int:
+    mode = cfg.side_mode.strip().lower().replace("-", "_")
+    if mode in {"x", "as_x", "x_only"}:
+        return 1
+    if mode in {"o", "as_o", "o_only"}:
+        return -1
+    if mode == "adaptive_o":
+        o_rate = _recent_o_win_rate(episode_infos or [])
+        if o_rate is None:
+            p_o = 0.5
+        else:
+            shortfall = max(0.0, cfg.o_target_win_rate - o_rate)
+            p_o = min(0.9, 0.5 + shortfall)
+        return -1 if float(rng.random()) < p_o else 1
+    return 1 if int(rng.integers(0, 2)) == 0 else -1
+
+
 def play_episode(
     model: PolicyValueNet,
     size: int,
     rng: np.random.Generator,
     cfg: DeepRLConfig,
+    episode_infos: list[dict] | None = None,
 ) -> tuple[list[PolicyStep], int, dict]:
     state = State.new(size)
     steps: list[PolicyStep] = []
     opponent_id = _sample_opponent(cfg, rng)
-    learner_player = 1 if int(rng.integers(0, 2)) == 0 else -1
+    learner_player = _learner_player(cfg, rng, episode_infos)
+    reward_weight = cfg.o_reward_weight if opponent_id != "self" and learner_player == -1 else 1.0
     while True:
         if opponent_id != "self" and state.player != learner_player:
             action = _opponent_move(opponent_id, model, state, rng, cfg)
             state = apply_move(state, action)
             done, winner = terminal(state)
             if done:
-                returns = _episode_returns(steps, winner, cfg.gamma)
+                returns = _episode_returns(steps, winner, cfg.gamma, reward_weight)
                 patched = []
                 for step, ret in zip(steps, returns):
                     patched.append(
@@ -130,7 +162,7 @@ def play_episode(
                         )
                     )
                 outcome = int(winner or 0)
-                return patched, outcome, _episode_info(opponent_id, learner_player, outcome)
+                return patched, outcome, _episode_info(opponent_id, learner_player, outcome, reward_weight)
             continue
 
         action, logp, value, obs, mask = select_action(model, state, rng, temperature=cfg.temperature, device=cfg.device)
@@ -149,7 +181,7 @@ def play_episode(
             )
         )
         if done:
-            returns = _episode_returns(steps, winner, cfg.gamma)
+            returns = _episode_returns(steps, winner, cfg.gamma, reward_weight)
             patched = []
             for step, ret in zip(steps, returns):
                 patched.append(
@@ -165,11 +197,11 @@ def play_episode(
                     )
                 )
             outcome = int(winner or 0)
-            return patched, outcome, _episode_info(opponent_id, learner_player, outcome)
+            return patched, outcome, _episode_info(opponent_id, learner_player, outcome, reward_weight)
         state = next_state
 
 
-def _episode_info(opponent_id: str, learner_player: int, winner: int) -> dict:
+def _episode_info(opponent_id: str, learner_player: int, winner: int, reward_weight: float = 1.0) -> dict:
     if opponent_id == "self":
         return {"opponent_id": opponent_id, "learner_player": None, "learner_result": None, "winner": winner}
     if winner == 0:
@@ -180,6 +212,7 @@ def _episode_info(opponent_id: str, learner_player: int, winner: int) -> dict:
         "opponent_id": opponent_id,
         "learner_player": int(learner_player),
         "learner_result": result,
+        "reward_weight": float(reward_weight),
         "winner": winner,
     }
 
@@ -396,7 +429,7 @@ def train_deep_rl(
         for group in range(cfg.batch_episodes):
             if episode >= cfg.episodes:
                 break
-            steps, outcome, info = play_episode(model, cfg.size, np_rng, cfg)
+            steps, outcome, info = play_episode(model, cfg.size, np_rng, cfg, episode_infos)
             batch_steps.extend(steps)
             group_ids.extend([group] * len(steps))
             outcomes.append(outcome)
