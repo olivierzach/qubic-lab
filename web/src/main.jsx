@@ -344,7 +344,7 @@ function LabApp() {
             <EvalSummary result={evalResult} selectedModel={selectedModel} />
             <div className="lab-focus-grid">
               <section className="paper-section plot-window">
-                <MetricsChart history={runData.history || []} />
+                <MetricsChart history={runData.history || []} latest={runData.latest} />
               </section>
               <SnapshotViewer
                 snapshot={activeSnapshot}
@@ -1101,7 +1101,7 @@ function valueColor(t, alpha) {
   return `rgba(${Math.round(184 + 38 * u)},${Math.round(92 - 16 * u)},${Math.round(78 - 10 * u)},${alpha})`;
 }
 
-function MetricsChart({ history }) {
+function MetricsChart({ history, latest }) {
   const canvasRef = useRef(null);
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -1115,17 +1115,17 @@ function MetricsChart({ history }) {
       canvas.height = Math.round(height * dpr);
       const ctx = canvas.getContext('2d');
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-      drawMetrics(ctx, { width, height }, history || []);
+      drawMetrics(ctx, { width, height }, history || [], latest || null);
     };
     render();
     const observer = new ResizeObserver(render);
     observer.observe(canvas);
     return () => observer.disconnect();
-  }, [history]);
+  }, [history, latest?.episode, latest?.episodes, latest?.run_dir]);
   return <canvas ref={canvasRef} className="chart" />;
 }
 
-function drawMetrics(ctx, canvas, history) {
+function drawMetrics(ctx, canvas, history, latest) {
   const w = canvas.width;
   const h = canvas.height;
   ctx.clearRect(0, 0, w, h);
@@ -1138,8 +1138,8 @@ function drawMetrics(ctx, canvas, history) {
     return;
   }
   const xs = history.map((d) => d.episode || d.step || 0);
-  const minX = Math.min(...xs);
-  const maxX = Math.max(...xs);
+  const minX = 0;
+  const maxX = Math.max(1, Number(latest?.episodes || 0), Number(latest?.episode || 0), ...xs);
   const values = (getY) => history.map((d) => Number(getY(d))).filter((v) => Number.isFinite(v));
   const range = (items, fallbackMin, fallbackMax) => {
     if (!items.length) return [fallbackMin, fallbackMax];
@@ -1149,17 +1149,29 @@ function drawMetrics(ctx, canvas, history) {
     return [min - pad, max + pad];
   };
   const valueItems = [...values((d) => d.value ?? d.mean_value), ...values((d) => Math.abs(Number(d.mean_abs_update || 0)))];
-  const policyItems = [...values((d) => d.entropy), ...values((d) => d.approx_kl)];
+  const entropyItems = values((d) => d.entropy);
+  const klItems = values((d) => d.approx_kl).filter((v) => v > 0);
   const margin = { left: 64, right: 22, top: 22, bottom: 36 };
   const gap = 24;
   const panelH = (h - margin.top - margin.bottom - gap * 2) / 3;
   const panelW = w - margin.left - margin.right;
   const [valueMin, valueMax] = range(valueItems, -0.05, 0.05);
-  const [, policyMax] = range(policyItems, 0, 0.05);
+  const [entropyMin, entropyMax] = range(entropyItems, 0, 0.05);
+  const klMin = Math.max(1e-7, klItems.length ? Math.min(...klItems) * 0.5 : 1e-6);
+  const klMax = Math.max(klMin * 10, klItems.length ? Math.max(...klItems) * 2 : 1e-3);
   const panels = [
     { x: margin.left, y: margin.top, w: panelW, h: panelH, title: 'outcomes', ymin: 0, ymax: 1 },
     { x: margin.left, y: margin.top + panelH + gap, w: panelW, h: panelH, title: 'value/update', ymin: valueMin, ymax: valueMax },
-    { x: margin.left, y: margin.top + (panelH + gap) * 2, w: panelW, h: panelH, title: 'policy stats', ymin: 0, ymax: policyMax },
+    {
+      x: margin.left,
+      y: margin.top + (panelH + gap) * 2,
+      w: panelW,
+      h: panelH,
+      title: 'policy stats',
+      ymin: entropyMin,
+      ymax: entropyMax,
+      right: { ymin: klMin, ymax: klMax },
+    },
   ];
   const defs = [
     [
@@ -1173,14 +1185,37 @@ function drawMetrics(ctx, canvas, history) {
     ],
     [
       { label: 'H', color: '#b79adb', get: (d) => Number(d.entropy || 0) },
-      { label: 'KL', color: '#8cc8d4', get: (d) => Number(d.approx_kl || 0) },
+      { label: 'KL', color: '#8cc8d4', get: (d) => Number(d.approx_kl || 0), transform: 'log', ymin: klMin, ymax: klMax },
     ],
   ];
   panels.forEach((panel, index) => {
     axes(ctx, panel, minX, maxX);
-    defs[index].forEach((item) => series(ctx, panel, history, minX, maxX, item.get, item.color));
+    defs[index].forEach((item) => series(ctx, panel, history, minX, maxX, item));
     legend(ctx, panel, history, defs[index]);
   });
+}
+
+function axisLabel(value) {
+  if (!Number.isFinite(value)) return '0';
+  if (Math.abs(value) >= 1000000) return `${(value / 1000000).toFixed(1)}M`;
+  if (Math.abs(value) >= 1000) return `${Math.round(value / 1000)}k`;
+  return String(Math.round(value));
+}
+
+function metricLabel(value) {
+  if (!Number.isFinite(value)) return '--';
+  if (Math.abs(value) > 0 && Math.abs(value) < 0.001) return value.toExponential(0);
+  return value.toFixed(3);
+}
+
+function yNorm(value, min, max, transform) {
+  if (transform === 'log') {
+    if (value <= 0 || min <= 0 || max <= 0) return null;
+    const lo = Math.log10(min);
+    const hi = Math.log10(max);
+    return (Math.log10(value) - lo) / Math.max(1e-9, hi - lo);
+  }
+  return (value - min) / Math.max(1e-9, max - min);
 }
 
 function axes(ctx, p, minX, maxX) {
@@ -1206,25 +1241,39 @@ function axes(ctx, p, minX, maxX) {
     ctx.fillText(v.toFixed(2), p.x - 52, y + 4);
   }
   ctx.fillStyle = '#756f66';
-  ctx.fillText(String(minX), p.x, p.y + p.h + 16);
+  ctx.fillText(axisLabel(minX), p.x, p.y + p.h + 16);
   ctx.textAlign = 'right';
-  ctx.fillText(String(maxX), p.x + p.w, p.y + p.h + 16);
+  ctx.fillText(axisLabel(maxX), p.x + p.w, p.y + p.h + 16);
+  if (p.right) {
+    ctx.fillStyle = '#8cc8d4';
+    for (let i = 0; i <= 2; i += 1) {
+      const frac = i / 2;
+      const y = p.y + p.h - frac * p.h;
+      const lo = Math.log10(p.right.ymin);
+      const hi = Math.log10(p.right.ymax);
+      const value = 10 ** (lo + frac * (hi - lo));
+      ctx.fillText(metricLabel(value), p.x + p.w - 5, y + 4);
+    }
+  }
   ctx.textAlign = 'left';
 }
 
-function series(ctx, p, history, minX, maxX, getY, color) {
+function series(ctx, p, history, minX, maxX, item) {
+  const ymin = item.ymin ?? p.ymin;
+  const ymax = item.ymax ?? p.ymax;
   const values = history
-    .map((d) => ({ x: d.episode || d.step || 0, y: Number(getY(d)) }))
-    .filter((d) => Number.isFinite(d.y));
+    .map((d) => ({ x: d.episode || d.step || 0, y: Number(item.get(d)) }))
+    .filter((d) => Number.isFinite(d.y) && (item.transform !== 'log' || d.y > 0));
   if (values.length < 2) return;
-  ctx.strokeStyle = color;
+  ctx.strokeStyle = item.color;
   ctx.lineWidth = 2.2;
   ctx.lineJoin = 'round';
   ctx.lineCap = 'round';
   ctx.beginPath();
   values.forEach((d, i) => {
     const x = p.x + ((d.x - minX) / Math.max(1, maxX - minX)) * p.w;
-    const norm = (d.y - p.ymin) / Math.max(1e-9, p.ymax - p.ymin);
+    const norm = yNorm(d.y, ymin, ymax, item.transform);
+    if (norm == null) return;
     const y = p.y + p.h - Math.max(0, Math.min(1, norm)) * p.h;
     if (i === 0) ctx.moveTo(x, y);
     else ctx.lineTo(x, y);
@@ -1232,8 +1281,9 @@ function series(ctx, p, history, minX, maxX, getY, color) {
   ctx.stroke();
   const last = values[values.length - 1];
   const x = p.x + ((last.x - minX) / Math.max(1, maxX - minX)) * p.w;
-  const y = p.y + p.h - Math.max(0, Math.min(1, (last.y - p.ymin) / Math.max(1e-9, p.ymax - p.ymin))) * p.h;
-  ctx.fillStyle = color;
+  const norm = yNorm(last.y, ymin, ymax, item.transform) ?? 0;
+  const y = p.y + p.h - Math.max(0, Math.min(1, norm)) * p.h;
+  ctx.fillStyle = item.color;
   ctx.beginPath();
   ctx.arc(x, y, 3.2, 0, Math.PI * 2);
   ctx.fill();

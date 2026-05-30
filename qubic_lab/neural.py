@@ -86,12 +86,12 @@ def empty_board_policy_analysis(model: PolicyValueNet, size: int, *, device: str
     with torch.no_grad():
         obs_t = torch.as_tensor(obs, dtype=torch.float32, device=device).unsqueeze(0)
         mask_t = torch.as_tensor(mask, dtype=torch.bool, device=device).unsqueeze(0)
-        logits, value = model(obs_t)
+        logits, value_t = model(obs_t)
         probs = torch.softmax(masked_logits(logits, mask_t), dim=-1).squeeze(0).cpu().numpy()
     layers = np.zeros((size, size, size), dtype=np.float32)
-    for idx, value in enumerate(probs):
+    for idx, prob in enumerate(probs):
         x, y, z = idx_to_xyz(idx, size)
-        layers[z, y, x] = float(value)
+        layers[z, y, x] = float(prob)
     top = []
     for idx in np.argsort(probs)[::-1][:10]:
         x, y, z = idx_to_xyz(int(idx), size)
@@ -106,7 +106,7 @@ def empty_board_policy_analysis(model: PolicyValueNet, size: int, *, device: str
         )
     return {
         "heatmap": layers.round(5).tolist(),
-        "value": round(float(value.item()), 6),
+        "value": round(float(value_t.item()), 6),
         "top_moves": top,
     }
 

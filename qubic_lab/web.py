@@ -238,6 +238,65 @@ def _read_jsonl(path: Path) -> list[dict[str, Any]]:
     return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
 
 
+def _sample_history(history: list[dict[str, Any]], limit: int = 1600) -> list[dict[str, Any]]:
+    if len(history) <= limit:
+        return history
+    last = len(history) - 1
+    indexes = sorted({round(i * last / (limit - 1)) for i in range(limit)})
+    return [history[index] for index in indexes]
+
+
+def _model_id_for_path(path: Path) -> str:
+    try:
+        return str(path.relative_to(Path.cwd()))
+    except ValueError:
+        return str(path)
+
+
+def _enrich_latest(path: Path, latest: dict[str, Any]) -> dict[str, Any]:
+    payload = dict(latest)
+    has_model = (path / "model.pt").exists() or (path / "q_table.npz").exists()
+    raw_value = payload.get("value")
+    needs_value = raw_value is None or (has_model and isinstance(raw_value, (int, float)) and raw_value == 0)
+    needs_top = not payload.get("top_moves")
+    if not needs_value and not needs_top:
+        return payload
+
+    size = int(payload.get("config", {}).get("size", 3))
+    try:
+        if has_model:
+            analysis = analyze_position(_model_id_for_path(path), State.new(size))
+            if needs_value:
+                payload["value"] = analysis.get("value")
+            if needs_top:
+                payload["top_moves"] = analysis.get("top_moves", [])
+            return payload
+    except Exception:
+        pass
+
+    heatmap = payload.get("heatmap")
+    if needs_top and heatmap:
+        moves = []
+        for z, layer in enumerate(heatmap):
+            for y, row in enumerate(layer):
+                for x, value in enumerate(row):
+                    move = z * size * size + y * size + x
+                    moves.append(
+                        {
+                            "move": move,
+                            "x": x,
+                            "y": y,
+                            "z": z,
+                            "prob": float(value),
+                            "value": float(value),
+                        }
+                    )
+        payload["top_moves"] = sorted(moves, key=lambda item: abs(item["value"]), reverse=True)[:10]
+    if needs_value:
+        payload["value"] = 0.0
+    return payload
+
+
 ARTIFACT_FILES = {
     "curves.png",
     "first_move_heatmap.png",
@@ -285,10 +344,10 @@ def _artifact_manifest(path: Path) -> list[dict[str, Any]]:
 
 def _timeline_for_run(path: Path) -> dict[str, Any]:
     latest_path = path / "latest.json"
-    latest = json.loads(latest_path.read_text()) if latest_path.exists() else None
-    metrics = _read_jsonl(path / "metrics.jsonl")
+    latest = _enrich_latest(path, json.loads(latest_path.read_text())) if latest_path.exists() else None
+    metrics = _sample_history(_read_jsonl(path / "metrics.jsonl"))
     snapshots = []
-    for item in metrics[-500:]:
+    for item in metrics:
         snapshots.append(
             {
                 "episode": item.get("episode"),
@@ -575,12 +634,20 @@ def _make_step_session(cfg: TabularConfig | DeepRLConfig) -> TabularStepSession 
 @app.get("/api/state")
 def state() -> JSONResponse:
     with _lock:
+        history = _history[-300:]
+        if _latest and _latest.get("run_dir"):
+            metrics = _read_jsonl(Path(str(_latest["run_dir"])) / "metrics.jsonl")
+            if metrics:
+                history = _sample_history(metrics)
+            latest = _enrich_latest(Path(str(_latest["run_dir"])), _latest)
+        else:
+            latest = _latest
         return JSONResponse(
             {
                 "running": _thread is not None and _thread.is_alive(),
-                "latest": _latest,
-                "history": _history[-300:],
-                "step_mode": bool(_latest and _latest.get("step_mode")),
+                "latest": latest,
+                "history": history,
+                "step_mode": bool(latest and latest.get("step_mode")),
             }
         )
 
@@ -645,8 +712,8 @@ async def step_run(request: Request) -> JSONResponse:
         latest = _step_session.step()
 
     _on_snapshot(latest)
-    with _lock:
-        history = _history[-300:]
+    run_dir = Path(str(latest.get("run_dir")))
+    history = _sample_history(_read_jsonl(run_dir / "metrics.jsonl"))
     return JSONResponse(
         {
             "ok": True,
@@ -654,7 +721,7 @@ async def step_run(request: Request) -> JSONResponse:
             "latest": latest,
             "history": history,
             "run_dir": latest.get("run_dir"),
-            "artifacts": _artifact_manifest(Path(str(latest.get("run_dir")))),
+            "artifacts": _artifact_manifest(run_dir),
             "complete": not bool(latest.get("running")),
         }
     )
@@ -695,9 +762,9 @@ def run(run_dir: str) -> JSONResponse:
     latest_path = path / "latest.json"
     if not latest_path.exists():
         raise HTTPException(status_code=404, detail="latest.json not found")
-    latest = json.loads(latest_path.read_text())
-    history = _read_jsonl(path / "metrics.jsonl")
-    return JSONResponse({"latest": latest, "history": history[-500:], "artifacts": _artifact_manifest(path)})
+    latest = _enrich_latest(path, json.loads(latest_path.read_text()))
+    history = _sample_history(_read_jsonl(path / "metrics.jsonl"))
+    return JSONResponse({"latest": latest, "history": history, "artifacts": _artifact_manifest(path)})
 
 
 @app.get("/api/model/timeline")

@@ -54,8 +54,8 @@ def test_runs_api_lists_metadata_and_inspects_recent_history(tmp_path: Path, mon
 
     body = _json(run(str(run_dir)))
     assert body["latest"]["config"]["size"] == 3
-    assert len(body["history"]) == 500
-    assert body["history"][0]["episode"] == 5
+    assert len(body["history"]) == 505
+    assert body["history"][0]["episode"] == 0
     assert body["history"][-1]["episode"] == 504
     assert {item["file"] for item in body["artifacts"]} >= {"analysis.json", "curves.png"}
 
@@ -80,8 +80,8 @@ def test_run_defaults_and_model_timeline_are_frontend_ready(tmp_path: Path, monk
     timeline = _json(model_timeline(run_dir=str(run_dir)))
     assert timeline["run_dir"] == str(run_dir)
     assert timeline["config"]["method"] == "q_learning"
-    assert len(timeline["snapshots"]) == 500
-    assert timeline["snapshots"][0]["episode"] == 5
+    assert len(timeline["snapshots"]) == 505
+    assert timeline["snapshots"][0]["episode"] == 0
     assert {item["file"] for item in timeline["artifacts"]} >= {"analysis.json", "curves.png"}
 
 
