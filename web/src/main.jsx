@@ -400,28 +400,47 @@ function SnapshotViewer({ snapshot, snapshots, snapshotIndex, previousSnapshot, 
   const max = Math.max(0, snapshots.length - 1);
   const source = snapshot || analysis;
   return (
-    <section className="paper-section heatmap-window">
-      <div className="section-head">
-        <div>
-          <h2>Policy Heatmap</h2>
-          <p>{snapshots.length ? `Snapshot ${snapshotIndex + 1} of ${snapshots.length}` : 'Current or analyzed position'}</p>
+    <>
+      <section className="paper-section board-window">
+        <div className="section-head">
+          <div>
+            <h2>3D Value Surface</h2>
+            <p>Projected Qubic board with value-colored cells and ranked policy targets.</p>
+          </div>
         </div>
-        <label className="range-label">time
-          <input
-            type="range"
-            min="0"
-            max={max}
-            value={Math.min(snapshotIndex, max)}
-            onChange={(e) => onIndex(Number(e.target.value))}
-            disabled={!snapshots.length}
-          />
-        </label>
-      </div>
-      <ValueHeatmap snapshot={source} previous={previousSnapshot} />
-      <LabBoard3D snapshot={source} />
-      <LayerStackView snapshot={source} />
-      <PolicyTable analysis={source} />
-    </section>
+        <LabBoard3D snapshot={source} />
+      </section>
+
+      <section className="paper-section heatmap-window">
+        <div className="section-head">
+          <div>
+            <h2>Policy Heatmap</h2>
+            <p>{snapshots.length ? `Snapshot ${snapshotIndex + 1} of ${snapshots.length}` : 'Current or analyzed position'}</p>
+          </div>
+          <label className="range-label">time
+            <input
+              type="range"
+              min="0"
+              max={max}
+              value={Math.min(snapshotIndex, max)}
+              onChange={(e) => onIndex(Number(e.target.value))}
+              disabled={!snapshots.length}
+            />
+          </label>
+        </div>
+        <ValueHeatmap snapshot={source} previous={previousSnapshot} />
+      </section>
+
+      <section className="paper-section policy-window">
+        <div className="section-head">
+          <div>
+            <h2>Policy Table</h2>
+            <p>Top legal targets from the current snapshot.</p>
+          </div>
+        </div>
+        <PolicyTable analysis={source} />
+      </section>
+    </>
   );
 }
 
@@ -1035,7 +1054,7 @@ function MetricsChart({ history }) {
     if (!canvas) return;
     drawMetrics(canvas.getContext('2d'), canvas, history || []);
   }, [history]);
-  return <canvas ref={canvasRef} className="chart" width="1200" height="900" />;
+  return <canvas ref={canvasRef} className="chart" width="1200" height="640" />;
 }
 
 function drawMetrics(ctx, canvas, history) {

@@ -209,25 +209,37 @@ label {
 }
 .lab-focus-grid {
   display: grid;
-  grid-template-columns: minmax(560px, 1fr) minmax(560px, 1fr);
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-areas:
+    "plot board"
+    "heatmap policy";
   gap: 14px;
-  align-items: stretch;
+  align-items: start;
 }
 .plot-window {
-  grid-column: 2;
-  grid-row: 1;
+  grid-area: plot;
   min-height: 0;
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-rows: auto auto;
 }
 .plot-window .section-head {
   margin-bottom: 6px;
 }
+.board-window {
+  grid-area: board;
+  display: grid;
+  grid-template-rows: auto auto;
+}
 .heatmap-window {
-  grid-column: 1;
-  grid-row: 1;
+  grid-area: heatmap;
   display: grid;
   align-content: start;
+}
+.policy-window {
+  grid-area: policy;
+  align-self: stretch;
+  max-height: 340px;
+  overflow: auto;
 }
 .two-column {
   display: grid;
@@ -315,21 +327,16 @@ label {
 }
 .board3d { aspect-ratio: 5 / 3; cursor: grab; }
 .board3d.compact { aspect-ratio: 7 / 3; }
-.chart { aspect-ratio: 16 / 7; }
+.chart { aspect-ratio: 15 / 8; }
 .lab-board3d {
   aspect-ratio: 5 / 3;
-  margin-bottom: 12px;
-}
-.plot-window .chart {
-  height: 100%;
-  min-height: 520px;
-  aspect-ratio: auto;
+  min-height: 260px;
 }
 
 .value-heatmap {
   display: grid;
   gap: 10px;
-  margin-bottom: 12px;
+  margin-bottom: 0;
 }
 .value-heatmap.empty {
   border: 1px solid var(--line);
@@ -405,7 +412,7 @@ label {
 
 .policy-table {
   width: 100%;
-  margin-top: 10px;
+  margin-top: 0;
   border-collapse: collapse;
   font-size: 13px;
 }
@@ -587,16 +594,25 @@ label {
   .lab-grid, .play-grid, .home, .two-column, .lab-focus-grid {
     grid-template-columns: 1fr;
   }
+  .lab-focus-grid {
+    grid-template-areas:
+      "plot"
+      "board"
+      "heatmap"
+      "policy";
+  }
   .plot-window {
-    grid-column: auto;
-    grid-row: auto;
+    grid-area: plot;
+  }
+  .board-window {
+    grid-area: board;
   }
   .heatmap-window {
-    grid-column: auto;
-    grid-row: auto;
+    grid-area: heatmap;
   }
-  .plot-window .chart {
-    min-height: 360px;
+  .policy-window {
+    grid-area: policy;
+    max-height: none;
   }
   .control-rail {
     position: static;
