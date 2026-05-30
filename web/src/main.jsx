@@ -1548,7 +1548,6 @@ function RunSummary({ latest, analysis }) {
   const recent = latest?.recent || {};
   const modelRecent = latest?.recent_model || {};
   const hasModelMetrics = Number(modelRecent.window || 0) > 0;
-  const top = (latest?.top_moves || analysis?.top_moves || []).slice(0, 4);
   return (
     <section className="summary-grid">
       <Metric label="Method" value={latest?.method ? methodLabel(latest.method) : 'none'} />
@@ -1569,10 +1568,6 @@ function RunSummary({ latest, analysis }) {
         </>
       )}
       <Metric label="Value" value={fixed(latest?.value ?? analysis?.value)} />
-      <div className="metric policy-cell">
-        <span>Top policy moves</span>
-        <div>{top.length ? top.map((m) => <b key={m.move}>({m.x},{m.y},{m.z}) {fixed(m.prob, 2)}</b>) : 'none'}</div>
-      </div>
     </section>
   );
 }
