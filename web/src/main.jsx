@@ -207,9 +207,8 @@ function LabApp() {
     setError('');
     const body = JSON.stringify(runConfig);
     try {
-      const data = await api('/api/run', { method: 'POST', body });
+      await api('/api/run', { method: 'POST', body });
       setSourceMode('live');
-      setNotice(data?.run_dir ? `Started ${data.run_dir}` : 'Run submitted');
       await loadRuns();
     } catch (err) {
       setError(String(err));
@@ -223,7 +222,7 @@ function LabApp() {
     setError('');
     try {
       await api('/api/stop', { method: 'POST' });
-      setNotice('Stop requested');
+      setNotice('');
     } catch (err) {
       setError(String(err));
     } finally {
