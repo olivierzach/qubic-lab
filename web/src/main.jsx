@@ -2,7 +2,16 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import './styles.css';
 
+const DEMO_MODE = import.meta.env.VITE_STATIC_DEMO === '1'
+  || (typeof window !== 'undefined' && window.location.hostname.endsWith('github.io'));
+const BASE_PATH = (import.meta.env.BASE_URL || '/').replace(/\/$/, '');
+const appHref = (path = '/') => {
+  const normalized = path.startsWith('/') ? path : `/${path}`;
+  return `${BASE_PATH}${normalized}` || '/';
+};
+
 const api = async (path, options = {}) => {
+  if (DEMO_MODE) return demoApi(path, options);
   const response = await fetch(path, {
     headers: options.body ? { 'Content-Type': 'application/json' } : undefined,
     ...options,
@@ -62,6 +71,323 @@ const moveCoord = (move, size) => ({
   x: move % size,
 });
 
+const cloneBoard = (board) => board.map((layer) => layer.map((row) => [...row]));
+
+function demoLines(size) {
+  const lines = [];
+  const dirs = [];
+  for (let dx = -1; dx <= 1; dx += 1) {
+    for (let dy = -1; dy <= 1; dy += 1) {
+      for (let dz = -1; dz <= 1; dz += 1) {
+        if (dx || dy || dz) {
+          const key = [dx, dy, dz].join(',');
+          const rev = [-dx, -dy, -dz].join(',');
+          if (key > rev) dirs.push([dx, dy, dz]);
+        }
+      }
+    }
+  }
+  for (let z = 0; z < size; z += 1) {
+    for (let y = 0; y < size; y += 1) {
+      for (let x = 0; x < size; x += 1) {
+        dirs.forEach(([dx, dy, dz]) => {
+          const end = { x: x + dx * (size - 1), y: y + dy * (size - 1), z: z + dz * (size - 1) };
+          const prev = { x: x - dx, y: y - dy, z: z - dz };
+          if (prev.x >= 0 && prev.x < size && prev.y >= 0 && prev.y < size && prev.z >= 0 && prev.z < size) return;
+          if (end.x < 0 || end.x >= size || end.y < 0 || end.y >= size || end.z < 0 || end.z >= size) return;
+          lines.push(Array.from({ length: size }, (_, i) => moveIndex(x + dx * i, y + dy * i, z + dz * i, size)));
+        });
+      }
+    }
+  }
+  return lines;
+}
+
+const demoLineCache = new Map();
+const getDemoLines = (size) => {
+  if (!demoLineCache.has(size)) demoLineCache.set(size, demoLines(size));
+  return demoLineCache.get(size);
+};
+
+function demoLegalMoves(board) {
+  const size = board.length;
+  const moves = [];
+  board.forEach((layer, z) => layer.forEach((row, y) => row.forEach((value, x) => {
+    if (!value) moves.push(moveIndex(x, y, z, size));
+  })));
+  return moves;
+}
+
+function demoWinner(board) {
+  const size = board.length;
+  for (const line of getDemoLines(size)) {
+    const values = line.map((move) => {
+      const { x, y, z } = moveCoord(move, size);
+      return board[z][y][x];
+    });
+    const first = values[0];
+    if (first && values.every((value) => value === first)) return first;
+  }
+  return 0;
+}
+
+function demoTerminal(board) {
+  const winner = demoWinner(board);
+  const legal = demoLegalMoves(board);
+  return { winner, done: Boolean(winner) || legal.length === 0, draw: !winner && legal.length === 0 };
+}
+
+function demoApply(board, move, player) {
+  const size = board.length;
+  const next = cloneBoard(board);
+  const { x, y, z } = moveCoord(move, size);
+  if (next[z]?.[y]?.[x] !== 0) throw new Error('Illegal move');
+  next[z][y][x] = player;
+  return next;
+}
+
+function demoLineScore(board, move, player) {
+  const size = board.length;
+  const { x, y, z } = moveCoord(move, size);
+  if (board[z][y][x]) return -999;
+  let score = 0;
+  for (const line of getDemoLines(size)) {
+    if (!line.includes(move)) continue;
+    let own = 0;
+    let opp = 0;
+    line.forEach((idx) => {
+      if (idx === move) own += 1;
+      else {
+        const c = moveCoord(idx, size);
+        if (board[c.z][c.y][c.x] === player) own += 1;
+        if (board[c.z][c.y][c.x] === -player) opp += 1;
+      }
+    });
+    if (own === size) score += 10000;
+    else if (opp === size - 1 && own === 1) score += 5000;
+    else if (!opp) score += 3 ** own;
+    else if (!own) score += 2 ** opp;
+  }
+  const center = (size - 1) / 2;
+  score -= 0.2 * Math.hypot(x - center, y - center, z - center);
+  return score;
+}
+
+function demoChooseMove(board, player, modelId = 'demo-agent') {
+  const legal = demoLegalMoves(board);
+  if (!legal.length) return null;
+  if (modelId === 'random') return legal[Math.floor(Math.random() * legal.length)];
+  const scored = legal.map((move) => {
+    const win = demoWinner(demoApply(board, move, player)) === player;
+    const block = demoWinner(demoApply(board, move, -player)) === -player;
+    return { move, score: demoLineScore(board, move, player) + (win ? 1e6 : 0) + (block ? 5e5 : 0) };
+  });
+  scored.sort((a, b) => b.score - a.score || a.move - b.move);
+  return scored[0].move;
+}
+
+function demoAnalyze(board, player = 1, modelId = 'demo-agent') {
+  const size = board.length;
+  const legal = demoLegalMoves(board);
+  const terminal = demoTerminal(board);
+  const scores = legal.map((move) => ({ move, score: demoLineScore(board, move, player) }));
+  const maxScore = Math.max(0, ...scores.map((item) => item.score));
+  const weights = scores.map((item) => {
+    if (modelId === 'random') return 1;
+    const win = demoWinner(demoApply(board, item.move, player)) === player;
+    const block = demoWinner(demoApply(board, item.move, -player)) === -player;
+    return Math.exp(Math.min(8, (item.score - maxScore) / 9)) + (win ? 8 : 0) + (block ? 4 : 0);
+  });
+  const total = weights.reduce((sum, value) => sum + value, 0) || 1;
+  const heatmap = emptyBoard(size);
+  const topMoves = scores.map((item, index) => {
+    const { x, y, z } = moveCoord(item.move, size);
+    const prob = weights[index] / total;
+    heatmap[z][y][x] = prob;
+    return { move: item.move, x, y, z, prob, value: item.score / Math.max(1, maxScore) };
+  }).sort((a, b) => b.prob - a.prob).slice(0, 10);
+  board.forEach((layer, z) => layer.forEach((row, y) => row.forEach((value, x) => {
+    if (value) heatmap[z][y][x] = value;
+  })));
+  return {
+    model_id: modelId,
+    board,
+    player,
+    heatmap,
+    legal_moves: legal,
+    top_moves: topMoves,
+    value: terminal.winner ? terminal.winner * player : topMoves[0]?.value || 0,
+    terminal,
+  };
+}
+
+function demoHistory() {
+  const size = 3;
+  return Array.from({ length: 80 }, (_, index) => {
+    const t = (index + 1) / 80;
+    const board = emptyBoard(size);
+    if (index > 18) board[1][1][1] = 1;
+    if (index > 32) board[1][1][0] = -1;
+    if (index > 48) board[1][0][1] = 1;
+    const analysis = demoAnalyze(board, index % 2 ? -1 : 1, 'demo-agent');
+    return {
+      ...analysis,
+      run_dir: 'demo-alpha-zero-lite',
+      run_id: 'demo-alpha-zero-lite',
+      method: 'alpha_zero',
+      episode: Math.round(t * 240000),
+      episodes: 240000,
+      recent_model: {
+        window: 100,
+        win_rate: 0.18 + 0.63 * t + 0.04 * Math.sin(index / 5),
+        loss_rate: 0.8 - 0.6 * t,
+        draw_rate: Math.max(0, 0.02 * Math.sin(index / 7)),
+        as_x_win_rate: Math.min(0.98, 0.35 + 0.58 * t),
+        as_o_win_rate: Math.min(0.82, 0.12 + 0.5 * t),
+      },
+      value: -0.12 + 0.94 * t,
+      entropy: Math.max(0.08, 1.7 - 1.15 * t),
+      approx_kl: 0.00001 + 0.0009 * Math.abs(Math.sin(index / 8)) * t,
+      config: { ...defaults, method: 'alpha_zero', episodes: 240000 },
+    };
+  });
+}
+
+const DEMO_HISTORY = demoHistory();
+const DEMO_LATEST = DEMO_HISTORY[DEMO_HISTORY.length - 1];
+const DEMO_MODELS = [
+  { id: 'demo-agent', label: 'Demo agent', kind: 'neural', size: 3, episode: DEMO_LATEST.episode },
+  { id: 'tactical', label: 'Tactical baseline', kind: 'baseline', size: 3 },
+  { id: 'random', label: 'Random baseline', kind: 'baseline', size: 3 },
+];
+
+function demoTournament(modelIds, size, games) {
+  const ids = modelIds?.length ? modelIds : ['demo-agent', 'tactical'];
+  const matches = [];
+  ids.forEach((a) => ['random', 'tactical'].forEach((b) => {
+    if (a === b) return;
+    let winsA = 0;
+    let winsB = 0;
+    let draws = 0;
+    const records = [];
+    for (let i = 0; i < Math.max(2, games || 100); i += 1) {
+      const result = demoPlayOut(size || 3, a, b, i % 2 ? -1 : 1);
+      const winner = result.winner === 0 ? 'draw' : (result.winner === 1 ? result.x_model : result.o_model);
+      records.push({ x_model: result.x_model, o_model: result.o_model, winner });
+      if (result.winner === 0) draws += 1;
+      else if ((result.winner === 1 && result.x_model === a) || (result.winner === -1 && result.o_model === a)) winsA += 1;
+      else winsB += 1;
+    }
+    matches.push({ a, b, games, wins: { [a]: winsA, [b]: winsB, draw: draws }, records });
+  }));
+  return { matches };
+}
+
+function demoPlayOut(size, modelA, modelB, sideA = 1) {
+  let board = emptyBoard(size);
+  let player = 1;
+  for (let ply = 0; ply < size ** 3; ply += 1) {
+    const model = player === sideA ? modelA : modelB;
+    const move = demoChooseMove(board, player, model);
+    if (move == null) break;
+    board = demoApply(board, move, player);
+    const terminal = demoTerminal(board);
+    if (terminal.done) return { winner: terminal.winner, x_model: sideA === 1 ? modelA : modelB, o_model: sideA === -1 ? modelA : modelB };
+    player *= -1;
+  }
+  return { winner: 0, x_model: sideA === 1 ? modelA : modelB, o_model: sideA === -1 ? modelA : modelB };
+}
+
+function demoStateSpace(games) {
+  const nodes = Array.from({ length: Math.min(180, Math.max(20, Number(games || 80) * 2)) }, (_, index) => {
+    const ply = index % 18;
+    const value = Math.tanh((ply - 6) / 7 + Math.sin(index / 9) * 0.25);
+    return {
+      id: `demo-${index}`,
+      ply,
+      value,
+      return: value + Math.sin(index / 5) * 0.15,
+      visits: 1 + ((index * 7) % 35),
+    };
+  });
+  return { nodes, total_nodes: nodes.length, games: Number(games || 80), outcomes: { draw_rate: 0.04 } };
+}
+
+async function demoApi(path, options = {}) {
+  const url = new URL(path, window.location.origin);
+  const body = options.body ? JSON.parse(options.body) : {};
+  if (url.pathname === '/api/run/defaults') return { defaults: { ppo: defaults, grpo: { ...defaults, method: 'grpo' }, alpha_zero: { ...defaults, method: 'alpha_zero' } } };
+  if (url.pathname === '/api/models') return { models: DEMO_MODELS };
+  if (url.pathname === '/api/runs') return { runs: [{ ...DEMO_LATEST, run_dir: 'demo-alpha-zero-lite', config: DEMO_LATEST.config }] };
+  if (url.pathname === '/api/run' && options.method === 'POST') return { ok: true, latest: DEMO_LATEST };
+  if (url.pathname === '/api/run') return { latest: DEMO_LATEST, history: DEMO_HISTORY, artifacts: [] };
+  if (url.pathname === '/api/state') return { running: false, latest: DEMO_LATEST, history: DEMO_HISTORY };
+  if (url.pathname === '/api/model/timeline') return { timeline: DEMO_HISTORY.filter((_, i) => i % 5 === 0), artifacts: [] };
+  if (url.pathname === '/api/artifacts') return { artifacts: [] };
+  if (url.pathname === '/api/stop' || url.pathname === '/api/step/reset') return { ok: true };
+  if (url.pathname === '/api/step') return { latest: DEMO_LATEST, history: DEMO_HISTORY, artifacts: [] };
+  if (url.pathname === '/api/analyze/position') return demoAnalyze(body.board || emptyBoard(body.size || 3), body.player || 1, body.model_id || 'demo-agent');
+  if (url.pathname === '/api/eval/tournament') return demoTournament(body.model_ids, body.size || 3, body.games || 200);
+  if (url.pathname === '/api/report-card') return {
+    model_id: body.model_id || 'demo-agent',
+    probes: {
+      pass_rate: 0.88,
+      families: {
+        immediate_win: { pass_rate: 0.96 },
+        immediate_block: { pass_rate: 0.92 },
+        fork_pressure: { pass_rate: 0.74 },
+      },
+    },
+    eval_ladder: {
+      rows: [
+        { opponent: 'random', win_rate: 0.94 },
+        { opponent: 'tactical', win_rate: 0.61 },
+      ],
+    },
+  };
+  if (url.pathname === '/api/state-space/sample') return demoStateSpace(body.games);
+  if (url.pathname === '/api/play/new') {
+    const size = body.size || 3;
+    let board = emptyBoard(size);
+    const history = [];
+    let player = 1;
+    if (body.human_player === -1) {
+      const move = demoChooseMove(board, player, body.model_id);
+      if (move == null) return { board, history, done: true, winner: 0, next_player: player, state: demoAnalyze(board, player, body.model_id) };
+      board = demoApply(board, move, player);
+      history.push(move);
+      player = -1;
+    }
+    return { board, history, done: false, winner: 0, next_player: player, state: demoAnalyze(board, player, body.model_id) };
+  }
+  if (url.pathname === '/api/play/move') {
+    const size = body.size || 3;
+    let board = emptyBoard(size);
+    const history = [];
+    let player = 1;
+    for (const humanMove of body.moves || []) {
+      if (body.human_player === player) {
+        board = demoApply(board, humanMove, player);
+        history.push(humanMove);
+        let terminal = demoTerminal(board);
+        if (terminal.done) return { board, history, done: true, winner: terminal.winner, next_player: -player, state: demoAnalyze(board, -player, body.model_id) };
+        player *= -1;
+      }
+      if (body.human_player !== player) {
+        const modelMove = demoChooseMove(board, player, body.model_id);
+        if (modelMove == null) return { board, history, done: true, winner: 0, next_player: player, state: demoAnalyze(board, player, body.model_id) };
+        board = demoApply(board, modelMove, player);
+        history.push(modelMove);
+        const terminal = demoTerminal(board);
+        if (terminal.done) return { board, history, done: true, winner: terminal.winner, next_player: -player, state: demoAnalyze(board, -player, body.model_id) };
+        player *= -1;
+      }
+    }
+    return { board, history, done: false, winner: 0, next_player: player, state: demoAnalyze(board, player, body.model_id) };
+  }
+  return {};
+}
+
 const pct = (value) => {
   const number = Number(value);
   return Number.isFinite(number) ? `${Math.round(number * 100)}%` : '--';
@@ -95,13 +421,13 @@ const formatBytes = (bytes = 0) => {
 function Header({ active }) {
   return (
     <header className="topbar">
-      <a className="brand" href="/lab">
+      <a className="brand" href={appHref('/lab')}>
         <span>Qubic Lab</span>
         <small>{active === 'play' ? 'standalone play' : 'research notebook'}</small>
       </a>
       <nav aria-label="Primary">
-        <a className={active === 'lab' ? 'active' : ''} href="/lab">Lab</a>
-        <a className={active === 'play' ? 'active' : ''} href="/play">Play</a>
+        <a className={active === 'lab' ? 'active' : ''} href={appHref('/lab')}>Lab</a>
+        <a className={active === 'play' ? 'active' : ''} href={appHref('/play')}>Play</a>
       </nav>
     </header>
   );
@@ -112,11 +438,11 @@ function Home() {
     <>
       <Header active="lab" />
       <main className="home paper-width">
-        <a href="/lab">
+        <a href={appHref('/lab')}>
           <strong>Research lab</strong>
           <span>Configure training runs, inspect live diagnostics, compare saved agents, and browse heatmap snapshots.</span>
         </a>
-        <a href="/play">
+        <a href={appHref('/play')}>
           <strong>Play app</strong>
           <span>Choose a model and side, start a clean game, use legal coordinate moves, and review history.</span>
         </a>
@@ -391,6 +717,7 @@ function LabApp() {
   return (
     <>
       <main className="lab-page paper-width compact-lab">
+        {DEMO_MODE && <div className="message">Static demo mode: browser-side play, analysis, and evaluation are active; long training runs require the Python server.</div>}
         {(error || notice) && <div className={error ? 'message error' : 'message'}>{error || notice}</div>}
 
         <section className="lab-grid">
@@ -424,7 +751,7 @@ function LabApp() {
             <div className="button-row">
               <button onClick={evaluateSelected} disabled={!selectedModel || selectedModel === 'random' || Boolean(busy)}>Evaluate</button>
               <button onClick={generateReportCard} disabled={!selectedModel || selectedModel === 'random' || Boolean(busy)}>Report</button>
-              <a className="button-link" href={`/play?model=${encodeURIComponent(selectedModel)}`}>Play selected</a>
+              <a className="button-link" href={`${appHref('/play')}?model=${encodeURIComponent(selectedModel)}`}>Play selected</a>
             </div>
             <label>State samples<input type="number" min="4" max="500" step="20" value={stateSpaceGames} onChange={(e) => setStateSpaceGames(Number(e.target.value))} /></label>
             <button onClick={sampleStateSpace} disabled={!selectedModel || Boolean(busy)}>Sample state map</button>
@@ -1854,7 +2181,9 @@ function MoveList({ game }) {
   );
 }
 
-const path = window.location.pathname;
+const path = BASE_PATH && window.location.pathname.startsWith(`${BASE_PATH}/`)
+  ? window.location.pathname.slice(BASE_PATH.length)
+  : window.location.pathname;
 const root = createRoot(document.getElementById('root'));
 if (path.startsWith('/play')) root.render(<PlayApp />);
 else if (path.startsWith('/lab') || path.startsWith('/runs')) root.render(<LabApp />);
