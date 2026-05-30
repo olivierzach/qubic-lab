@@ -1103,6 +1103,7 @@ function valueColor(t, alpha) {
 
 function MetricsChart({ history, latest }) {
   const canvasRef = useRef(null);
+  const [hover, setHover] = useState(null);
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -1115,28 +1116,45 @@ function MetricsChart({ history, latest }) {
       canvas.height = Math.round(height * dpr);
       const ctx = canvas.getContext('2d');
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-      drawMetrics(ctx, { width, height }, history || [], latest || null);
+      drawMetrics(ctx, { width, height }, history || [], latest || null, hover);
     };
     render();
     const observer = new ResizeObserver(render);
     observer.observe(canvas);
     return () => observer.disconnect();
-  }, [history, latest?.episode, latest?.episodes, latest?.run_dir]);
-  return <canvas ref={canvasRef} className="chart" />;
+  }, [history, latest?.episode, latest?.episodes, latest?.run_dir, hover]);
+  const onMove = (event) => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const rect = canvas.getBoundingClientRect();
+    const width = Math.max(640, Math.round(rect.width || 960));
+    const height = Math.max(360, Math.round(rect.height || 512));
+    const scaleX = width / Math.max(1, rect.width);
+    const scaleY = height / Math.max(1, rect.height);
+    const next = metricHoverFromPointer(
+      history || [],
+      latest || null,
+      width,
+      height,
+      (event.clientX - rect.left) * scaleX,
+      (event.clientY - rect.top) * scaleY,
+    );
+    setHover(next ? { ...next, left: next.left / scaleX, top: next.top / scaleY } : null);
+  };
+  return (
+    <div className="chart-wrap" onMouseMove={onMove} onMouseLeave={() => setHover(null)}>
+      <canvas ref={canvasRef} className="chart" />
+      {hover && (
+        <div className="chart-tooltip" style={{ left: hover.left, top: hover.top }}>
+          <b>episode {axisLabel(hover.episode)}</b>
+          {hover.items.map((item) => <span key={item.label} style={{ color: item.color }}>{item.label} {item.text}</span>)}
+        </div>
+      )}
+    </div>
+  );
 }
 
-function drawMetrics(ctx, canvas, history, latest) {
-  const w = canvas.width;
-  const h = canvas.height;
-  ctx.clearRect(0, 0, w, h);
-  ctx.fillStyle = '#111318';
-  ctx.fillRect(0, 0, w, h);
-  if (history.length < 2) {
-    ctx.fillStyle = '#a9a192';
-    ctx.font = '17px Georgia, serif';
-    ctx.fillText('Load, start, or step a run to draw live plots.', 44, 44);
-    return;
-  }
+function getMetricModel(history, latest, w, h) {
   const xs = history.map((d) => d.episode || d.step || 0);
   const minX = 0;
   const maxX = Math.max(1, Number(latest?.episodes || 0), Number(latest?.episode || 0), ...xs);
@@ -1188,11 +1206,68 @@ function drawMetrics(ctx, canvas, history, latest) {
       { label: 'KL', color: '#8cc8d4', get: (d) => Number(d.approx_kl || 0), transform: 'log', ymin: klMin, ymax: klMax },
     ],
   ];
+  return { minX, maxX, panels, defs };
+}
+
+function metricHoverFromPointer(history, latest, width, height, pointerX, pointerY) {
+  if (history.length < 2) return null;
+  const model = getMetricModel(history, latest, Math.max(640, width), Math.max(360, height));
+  const activePanel = model.panels.find((p) => pointerY >= p.y && pointerY <= p.y + p.h);
+  const plotPanel = activePanel || model.panels[0];
+  if (pointerX < plotPanel.x || pointerX > plotPanel.x + plotPanel.w) return null;
+  const episode = model.minX + ((pointerX - plotPanel.x) / Math.max(1, plotPanel.w)) * (model.maxX - model.minX);
+  const nearest = history.reduce((best, item) => {
+    const itemEpisode = item.episode || item.step || 0;
+    const bestEpisode = best.episode || best.step || 0;
+    return Math.abs(itemEpisode - episode) < Math.abs(bestEpisode - episode) ? item : best;
+  }, history[0]);
+  const nearestEpisode = nearest.episode || nearest.step || 0;
+  const x = plotPanel.x + ((nearestEpisode - model.minX) / Math.max(1, model.maxX - model.minX)) * plotPanel.w;
+  const items = model.defs.flatMap((group) =>
+    group.map((item) => ({ label: item.label, color: item.color, value: Number(item.get(nearest)) }))
+      .filter((item) => Number.isFinite(item.value))
+      .map((item) => ({ ...item, text: metricLabel(item.value) })),
+  );
+  return {
+    episode: nearestEpisode,
+    row: nearest,
+    left: Math.max(10, Math.min(width - 174, x + 12)),
+    top: Math.max(8, Math.min(height - 150, pointerY + 12)),
+    items,
+  };
+}
+
+function drawMetrics(ctx, canvas, history, latest, hover) {
+  const w = canvas.width;
+  const h = canvas.height;
+  ctx.clearRect(0, 0, w, h);
+  ctx.fillStyle = '#111318';
+  ctx.fillRect(0, 0, w, h);
+  if (history.length < 2) {
+    ctx.fillStyle = '#a9a192';
+    ctx.font = '17px Georgia, serif';
+    ctx.fillText('Load, start, or step a run to draw live plots.', 44, 44);
+    return;
+  }
+  const { minX, maxX, panels, defs } = getMetricModel(history, latest, w, h);
   panels.forEach((panel, index) => {
     axes(ctx, panel, minX, maxX);
     defs[index].forEach((item) => series(ctx, panel, history, minX, maxX, item));
     legend(ctx, panel, history, defs[index]);
   });
+  if (hover?.row) {
+    const episode = hover.row.episode || hover.row.step || 0;
+    panels.forEach((panel, index) => {
+      const x = panel.x + ((episode - minX) / Math.max(1, maxX - minX)) * panel.w;
+      ctx.strokeStyle = 'rgba(240,234,220,.34)';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(x, panel.y);
+      ctx.lineTo(x, panel.y + panel.h);
+      ctx.stroke();
+      defs[index].forEach((item) => point(ctx, panel, episode, Number(item.get(hover.row)), minX, maxX, item));
+    });
+  }
 }
 
 function axisLabel(value) {
@@ -1287,6 +1362,23 @@ function series(ctx, p, history, minX, maxX, item) {
   ctx.beginPath();
   ctx.arc(x, y, 3.2, 0, Math.PI * 2);
   ctx.fill();
+}
+
+function point(ctx, p, episode, value, minX, maxX, item) {
+  if (!Number.isFinite(value) || (item.transform === 'log' && value <= 0)) return;
+  const ymin = item.ymin ?? p.ymin;
+  const ymax = item.ymax ?? p.ymax;
+  const norm = yNorm(value, ymin, ymax, item.transform);
+  if (norm == null) return;
+  const x = p.x + ((episode - minX) / Math.max(1, maxX - minX)) * p.w;
+  const y = p.y + p.h - Math.max(0, Math.min(1, norm)) * p.h;
+  ctx.fillStyle = item.color;
+  ctx.strokeStyle = '#111318';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.arc(x, y, 4, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.stroke();
 }
 
 function legend(ctx, p, history, items) {
