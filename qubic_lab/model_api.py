@@ -11,7 +11,7 @@ from typing import Any
 import numpy as np
 import torch
 
-from qubic_lab.game import State, apply_move, idx_to_xyz, legal_moves, terminal
+from qubic_lab.game import State, apply_move, flatten_board, idx_to_xyz, legal_moves, terminal, winning_lines
 from qubic_lab.neural import PolicyValueNet, legal_mask, obs_from_state
 from qubic_lab.rl_tabular import state_key
 
@@ -95,6 +95,11 @@ class LoadedModel:
             probs[moves] = 1.0 / len(moves)
             return probs, 0.0
 
+        if self.record.kind == "tactical":
+            move, score = tactical_move(state, random.Random(0))
+            probs[move] = 1.0
+            return probs, float(np.tanh(score / 8.0))
+
         if self.record.kind == "tabular":
             row = self._load_q().get(state_key(state), np.zeros(n, dtype=np.float32))
             masked = np.full(n, -np.inf, dtype=np.float32)
@@ -115,6 +120,9 @@ class LoadedModel:
         return probs_t.cpu().numpy().astype(np.float32), float(value.item())
 
     def choose_move(self, state: State, rng: random.Random, *, greedy: bool = True) -> int:
+        if self.record.kind == "tactical":
+            return tactical_move(state, rng)[0]
+
         probs, _ = self.policy_value(state)
         moves = legal_moves(state).astype(int)
         if greedy:
@@ -138,10 +146,60 @@ def _run_latest(path: Path) -> dict[str, Any] | None:
         return None
 
 
+def _winning_moves(state: State, player: int) -> list[int]:
+    wins = []
+    test_state = State(board=state.board, player=player)
+    for move in legal_moves(state).astype(int).tolist():
+        next_state = apply_move(test_state, move)
+        done, winner = terminal(next_state)
+        if done and winner == player:
+            wins.append(int(move))
+    return wins
+
+
+def _move_pressure_score(state: State, move: int) -> float:
+    flat = flatten_board(state.board)
+    player = int(state.player)
+    score = 0.0
+    for line in winning_lines(state.size):
+        if move not in line:
+            continue
+        values = flat[list(line)]
+        own = int(np.sum(values == player))
+        opp = int(np.sum(values == -player))
+        empty = int(np.sum(values == 0))
+        if opp == 0:
+            score += (own + 1) ** 2 + 0.25 * empty
+        if own == 0:
+            score += 0.7 * (opp + 1) ** 2
+    x, y, z = idx_to_xyz(move, state.size)
+    center = (state.size - 1) / 2
+    score -= 0.08 * (abs(x - center) + abs(y - center) + abs(z - center))
+    return score
+
+
+def tactical_move(state: State, rng: random.Random) -> tuple[int, float]:
+    moves = legal_moves(state).astype(int).tolist()
+    if not moves:
+        return 0, 0.0
+    wins = _winning_moves(state, int(state.player))
+    if wins:
+        return int(rng.choice(wins)), 100.0
+    blocks = _winning_moves(state, -int(state.player))
+    if blocks:
+        return int(rng.choice(blocks)), 60.0
+    scored = [(move, _move_pressure_score(state, move)) for move in moves]
+    best = max(score for _, score in scored)
+    best_moves = [move for move, score in scored if score == best]
+    return int(rng.choice(best_moves)), float(best)
+
+
 def list_models(root: Path = Path("runs")) -> list[ModelRecord]:
-    records = [
-        ModelRecord(id="random", kind="random", label="Random baseline", run_dir=None, size=3, method="random")
+    builtins = [
+        ModelRecord(id="random", kind="random", label="Random baseline", run_dir=None, size=3, method="random"),
+        ModelRecord(id="tactical", kind="tactical", label="Tactical baseline", run_dir=None, size=3, method="tactical"),
     ]
+    records = []
     for latest_path in root.rglob("latest.json"):
         run_dir = latest_path.parent
         latest = _run_latest(run_dir)
@@ -173,8 +231,8 @@ def list_models(root: Path = Path("runs")) -> list[ModelRecord]:
                     method=method,
                 )
             )
-    records.sort(key=lambda r: (r.kind == "random", r.method, r.id), reverse=False)
-    return records
+    records.sort(key=lambda r: (r.method, r.id), reverse=False)
+    return [*builtins, *records]
 
 
 def load_model(model_id: str) -> LoadedModel:

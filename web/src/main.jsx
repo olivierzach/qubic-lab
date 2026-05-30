@@ -288,9 +288,10 @@ function LabApp() {
     setError('');
     try {
       const size = selected?.size || runConfig.size || 3;
+      const modelIds = selectedModel === 'tactical' ? [selectedModel] : [selectedModel, 'tactical'];
       const data = await api('/api/eval/tournament', {
         method: 'POST',
-        body: JSON.stringify({ model_ids: [selectedModel], size, games: evalGames, seed: runConfig.seed || 0 }),
+        body: JSON.stringify({ model_ids: modelIds, size, games: evalGames, seed: runConfig.seed || 0 }),
       });
       setEvalResult(data);
     } catch (err) {
@@ -1516,22 +1517,36 @@ function RunSummary({ latest, analysis }) {
 }
 
 function EvalSummary({ result, selectedModel }) {
-  const match = result?.matches?.find((item) => item.a === selectedModel || item.b === selectedModel);
-  if (!match) return null;
-  const wins = match.wins || {};
-  const modelWins = wins[selectedModel] || 0;
-  const randomWins = wins.random || 0;
-  const draws = wins.draw || 0;
-  const games = match.games || result.games || Math.max(1, modelWins + randomWins + draws);
-  const score = (modelWins + 0.5 * draws) / Math.max(1, games);
+  const matches = result?.matches || [];
+  const opponents = ['random', 'tactical'].filter((id) => id !== selectedModel);
+  const rows = opponents
+    .map((opponent) => {
+      const match = matches.find((item) =>
+        (item.a === selectedModel && item.b === opponent) || (item.b === selectedModel && item.a === opponent),
+      );
+      if (!match) return null;
+      const wins = match.wins || {};
+      const modelWins = wins[selectedModel] || 0;
+      const opponentWins = wins[opponent] || 0;
+      const draws = wins.draw || 0;
+      const games = match.games || result.games || Math.max(1, modelWins + opponentWins + draws);
+      const score = (modelWins + 0.5 * draws) / Math.max(1, games);
+      return { opponent, modelWins, opponentWins, draws, games, score };
+    })
+    .filter(Boolean);
+  if (!rows.length) return null;
   return (
     <section className="eval-strip">
       <span>fixed eval</span>
-      <b>{pct(score)}</b>
-      <span>W {modelWins}</span>
-      <span>D {draws}</span>
-      <span>L {randomWins}</span>
-      <span>{games} games vs random</span>
+      {rows.map((row) => (
+        <React.Fragment key={row.opponent}>
+          <b>{pct(row.score)}</b>
+          <span>vs {row.opponent}</span>
+          <span>W {row.modelWins}</span>
+          <span>D {row.draws}</span>
+          <span>L {row.opponentWins}</span>
+        </React.Fragment>
+      ))}
     </section>
   );
 }
