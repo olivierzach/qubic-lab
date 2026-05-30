@@ -113,6 +113,8 @@ function LabApp() {
   const [error, setError] = useState('');
   const [evalGames, setEvalGames] = useState(200);
   const [evalResult, setEvalResult] = useState(null);
+  const [stateSpaceGames, setStateSpaceGames] = useState(80);
+  const [stateSpace, setStateSpace] = useState(null);
 
   const selected = models.find((m) => m.id === selectedModel);
   const snapshots = timeline.length ? timeline : (runData.history || []).filter((d) => d.heatmap);
@@ -298,6 +300,29 @@ function LabApp() {
     }
   };
 
+  const sampleStateSpace = async () => {
+    setBusy('state-space');
+    setError('');
+    try {
+      const size = selected?.size || runConfig.size || 3;
+      const data = await api('/api/state-space/sample', {
+        method: 'POST',
+        body: JSON.stringify({
+          model_id: selectedModel,
+          size,
+          games: stateSpaceGames,
+          seed: runConfig.seed || 0,
+          greedy: false,
+        }),
+      });
+      setStateSpace(data);
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setBusy('');
+    }
+  };
+
   return (
     <>
       <main className="lab-page paper-width compact-lab">
@@ -335,6 +360,8 @@ function LabApp() {
               <button onClick={evaluateSelected} disabled={!selectedModel || selectedModel === 'random' || Boolean(busy)}>Evaluate</button>
               <a className="button-link" href={`/play?model=${encodeURIComponent(selectedModel)}`}>Play selected</a>
             </div>
+            <label>State samples<input type="number" min="4" max="500" step="20" value={stateSpaceGames} onChange={(e) => setStateSpaceGames(Number(e.target.value))} /></label>
+            <button onClick={sampleStateSpace} disabled={!selectedModel || Boolean(busy)}>Sample state map</button>
 
             <SystemInputs config={runConfig} selected={selected} latest={runData.latest} compact />
           </aside>
@@ -353,6 +380,7 @@ function LabApp() {
                 previousSnapshot={previousSnapshot}
                 onIndex={setSnapshotIndex}
                 analysis={analysis}
+                stateSpace={stateSpace}
               />
             </div>
             <div className="two-column">
@@ -443,7 +471,7 @@ function SystemInputs({ config, selected, latest, compact = false }) {
   );
 }
 
-function SnapshotViewer({ snapshot, snapshots, snapshotIndex, previousSnapshot, onIndex, analysis }) {
+function SnapshotViewer({ snapshot, snapshots, snapshotIndex, previousSnapshot, onIndex, analysis, stateSpace }) {
   const max = Math.max(0, snapshots.length - 1);
   const source = snapshot || analysis;
   return (
@@ -471,6 +499,10 @@ function SnapshotViewer({ snapshot, snapshots, snapshotIndex, previousSnapshot, 
 
       <section className="paper-section policy-window">
         <PolicyTable analysis={source} />
+      </section>
+
+      <section className="paper-section state-window">
+        <StateSpaceDiagram data={stateSpace} />
       </section>
     </>
   );
@@ -625,6 +657,73 @@ function LayerStackView({ snapshot }) {
           </div>
         ))}
       </div>
+    </div>
+  );
+}
+
+function StateSpaceDiagram({ data }) {
+  const nodes = data?.nodes || [];
+  if (!nodes.length) {
+    return (
+      <div className="state-map empty">
+        <b>sampled state space</b>
+        <span>Use Sample state map to roll out the selected model and plot reachable states by ply and value.</span>
+      </div>
+    );
+  }
+  const width = 760;
+  const height = 210;
+  const margin = { left: 34, right: 12, top: 18, bottom: 24 };
+  const maxPly = Math.max(1, ...nodes.map((n) => Number(n.ply || 0)));
+  const values = nodes.map((n) => Number(n.value || 0)).filter(Number.isFinite);
+  const minValue = Math.min(-1, ...values);
+  const maxValue = Math.max(1, ...values);
+  const maxVisits = Math.max(1, ...nodes.map((n) => Number(n.visits || 1)));
+  const xFor = (ply) => margin.left + (Number(ply || 0) / maxPly) * (width - margin.left - margin.right);
+  const yFor = (value) => margin.top + (1 - ((Number(value || 0) - minValue) / Math.max(1e-6, maxValue - minValue))) * (height - margin.top - margin.bottom);
+  const colorFor = (r) => {
+    const value = Math.max(-1, Math.min(1, Number(r || 0)));
+    return value >= 0 ? `rgba(98,176,141,${0.42 + 0.38 * value})` : `rgba(208,106,88,${0.42 + 0.38 * Math.abs(value)})`;
+  };
+  const rows = Array.from({ length: 5 }, (_, i) => minValue + (i / 4) * (maxValue - minValue));
+  const cols = Array.from({ length: Math.min(6, maxPly + 1) }, (_, i) => Math.round((i / Math.max(1, Math.min(5, maxPly))) * maxPly));
+  return (
+    <div className="state-map">
+      <div className="state-map-meta">
+        <b>sampled state space</b>
+        <span>{data.total_nodes} states</span>
+        <span>{data.games} games</span>
+        <span>D {pct(data.outcomes?.draw_rate)}</span>
+      </div>
+      <svg viewBox={`0 0 ${width} ${height}`} role="img" aria-label="Sampled state-space values by ply">
+        {rows.map((value) => (
+          <g key={`row-${value}`}>
+            <line x1={margin.left} x2={width - margin.right} y1={yFor(value)} y2={yFor(value)} />
+            <text x={margin.left - 7} y={yFor(value) + 4} textAnchor="end">{fixed(value, 1)}</text>
+          </g>
+        ))}
+        {cols.map((ply) => (
+          <g key={`col-${ply}`}>
+            <line x1={xFor(ply)} x2={xFor(ply)} y1={margin.top} y2={height - margin.bottom} />
+            <text x={xFor(ply)} y={height - 6} textAnchor="middle">{ply}</text>
+          </g>
+        ))}
+        <text x={margin.left} y={12}>value by ply, radius = visits, color = rollout return</text>
+        {nodes.map((node) => {
+          const radius = 2 + 7 * Math.sqrt(Number(node.visits || 1) / maxVisits);
+          return (
+            <circle
+              key={node.id}
+              cx={xFor(node.ply)}
+              cy={yFor(node.value)}
+              r={radius}
+              fill={colorFor(node.return)}
+            >
+              <title>{`ply ${node.ply}  V ${fixed(node.value, 3)}  R ${fixed(node.return, 3)}  visits ${node.visits}`}</title>
+            </circle>
+          );
+        })}
+      </svg>
     </div>
   );
 }
@@ -1171,8 +1270,8 @@ function getMetricModel(history, latest, w, h) {
   const valueItems = [...values((d) => d.value ?? d.mean_value), ...values((d) => Math.abs(Number(d.mean_abs_update || 0)))];
   const entropyItems = values((d) => d.entropy);
   const klItems = values((d) => d.approx_kl).filter((v) => v > 0);
-  const margin = { left: 64, right: 22, top: 22, bottom: 36 };
-  const gap = 24;
+  const margin = { left: 64, right: 22, top: 34, bottom: 34 };
+  const gap = 30;
   const panelH = (h - margin.top - margin.bottom - gap * 2) / 3;
   const panelW = w - margin.left - margin.right;
   const [valueMin, valueMax] = range(valueItems, -0.05, 0.05);
@@ -1296,18 +1395,18 @@ function yNorm(value, min, max, transform) {
 }
 
 function axes(ctx, p, minX, maxX) {
+  ctx.fillStyle = '#a9a192';
+  ctx.font = '700 10px ui-monospace, SFMono-Regular, Menlo, monospace';
+  ctx.fillText(p.title.toUpperCase(), p.x, p.y - 8);
   ctx.fillStyle = '#151820';
   ctx.fillRect(p.x, p.y, p.w, p.h);
-  ctx.strokeStyle = '#48505c';
+  ctx.strokeStyle = '#3b424d';
   ctx.lineWidth = 1;
   ctx.strokeRect(p.x, p.y, p.w, p.h);
-  ctx.fillStyle = '#f0eadc';
-  ctx.font = '700 11px ui-monospace, SFMono-Regular, Menlo, monospace';
-  ctx.fillText(p.title.toUpperCase(), p.x + 10, p.y + 17);
   ctx.fillStyle = '#a9a192';
-  ctx.font = '11px ui-monospace, SFMono-Regular, Menlo, monospace';
-  for (let i = 0; i <= 4; i += 1) {
-    const frac = i / 4;
+  ctx.font = '10px ui-monospace, SFMono-Regular, Menlo, monospace';
+  for (let i = 0; i <= 2; i += 1) {
+    const frac = i / 2;
     const y = p.y + p.h - frac * p.h;
     const v = p.ymin + frac * (p.ymax - p.ymin);
     ctx.strokeStyle = i === 0 ? '#3b424d' : '#272d36';
@@ -1386,12 +1485,12 @@ function point(ctx, p, episode, value, minX, maxX, item) {
 function legend(ctx, p, history, items) {
   let x = p.x + p.w - 8;
   ctx.textAlign = 'right';
-  ctx.font = '700 11px ui-monospace, SFMono-Regular, Menlo, monospace';
+  ctx.font = '700 10px ui-monospace, SFMono-Regular, Menlo, monospace';
   items.slice().reverse().forEach((item) => {
     const values = history.map((d) => Number(item.get(d))).filter((v) => Number.isFinite(v));
     const text = `${item.label} ${values.length ? fixed(values[values.length - 1], 3) : '--'}`;
     ctx.fillStyle = item.color;
-    ctx.fillText(text, x, p.y + 17);
+    ctx.fillText(text, x, p.y - 8);
     x -= ctx.measureText(text).width + 14;
   });
   ctx.textAlign = 'left';

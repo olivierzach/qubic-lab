@@ -212,7 +212,8 @@ label {
   grid-template-columns: repeat(2, minmax(0, 1fr));
   grid-template-areas:
     "plot board"
-    "heatmap policy";
+    "heatmap policy"
+    "state state";
   gap: 10px;
   align-items: start;
 }
@@ -234,6 +235,9 @@ label {
   align-self: stretch;
   max-height: 322px;
   overflow: auto;
+}
+.state-window {
+  grid-area: state;
 }
 .two-column {
   display: grid;
@@ -463,6 +467,52 @@ label {
 .heatmap-legend .mid { background: rgb(76,118,158); color: var(--ink); }
 .heatmap-legend .high { background: rgb(213,164,71); color: #111318; }
 
+.state-map {
+  display: grid;
+  gap: 6px;
+  min-height: 150px;
+}
+.state-map.empty {
+  align-content: center;
+  min-height: 150px;
+  color: var(--muted);
+}
+.state-map.empty b, .state-map-meta b {
+  color: var(--ink);
+  font: 600 12px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+  text-transform: uppercase;
+}
+.state-map.empty span {
+  max-width: 68ch;
+  font-size: 12px;
+}
+.state-map-meta {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+  color: var(--muted);
+  font: 10.5px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.state-map svg {
+  width: 100%;
+  min-height: 160px;
+  display: block;
+  background: rgba(15, 17, 21, .42);
+}
+.state-map line {
+  stroke: rgba(91, 98, 112, .28);
+  stroke-width: 1;
+}
+.state-map text {
+  fill: var(--muted);
+  font: 10px ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.state-map circle {
+  stroke: rgba(15, 17, 21, .72);
+  stroke-width: 1;
+}
+
 .policy-table {
   width: 100%;
   margin-top: 0;
@@ -652,7 +702,8 @@ label {
       "plot"
       "board"
       "heatmap"
-      "policy";
+      "policy"
+      "state";
   }
   .plot-window {
     grid-area: plot;
@@ -666,6 +717,9 @@ label {
   .policy-window {
     grid-area: policy;
     max-height: none;
+  }
+  .state-window {
+    grid-area: state;
   }
   .control-rail {
     position: static;

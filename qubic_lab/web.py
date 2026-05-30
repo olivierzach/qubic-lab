@@ -20,6 +20,7 @@ from qubic_lab.model_api import (
     analyze_position,
     layers_to_state,
     list_models,
+    load_model,
     play_game,
     run_tournament,
 )
@@ -295,6 +296,109 @@ def _enrich_latest(path: Path, latest: dict[str, Any]) -> dict[str, Any]:
     if needs_value:
         payload["value"] = 0.0
     return payload
+
+
+def _state_hash(state: State) -> str:
+    board = ",".join(str(int(value)) for value in state.board.reshape(-1).tolist())
+    return f"{state.player}:{board}"
+
+
+def _sample_state_space(
+    model_id: str,
+    *,
+    size: int,
+    games: int,
+    seed: int,
+    greedy: bool,
+) -> dict[str, Any]:
+    rng = random.Random(seed)
+    model = load_model(model_id)
+    nodes: dict[str, dict[str, Any]] = {}
+    outcomes = {1: 0, -1: 0, 0: 0}
+    game_count = max(1, games)
+
+    for game_idx in range(game_count):
+        state = State.new(size)
+        trajectory: list[tuple[str, int, float, float, int]] = []
+        while True:
+            probs, value = model.policy_value(state)
+            moves = legal_moves(state).astype(int).tolist()
+            move_probs = np.array([float(probs[move]) for move in moves], dtype=np.float64)
+            total = float(move_probs.sum())
+            if total > 0:
+                normalized = move_probs / total
+                entropy = float(-(normalized * np.log(np.clip(normalized, 1e-12, 1.0))).sum())
+            else:
+                entropy = 0.0
+
+            key = _state_hash(state)
+            trajectory.append((key, len(trajectory), float(value), entropy, int(state.player)))
+            move = model.choose_move(state, rng, greedy=greedy)
+            state = apply_move(state, move)
+            done, winner = terminal(state)
+            if done:
+                outcome = int(winner or 0)
+                outcomes[outcome] += 1
+                for key, ply, value, entropy, player in trajectory:
+                    signed_return = 0.0 if outcome == 0 else (1.0 if outcome == player else -1.0)
+                    node = nodes.setdefault(
+                        key,
+                        {
+                            "id": len(nodes),
+                            "ply": ply,
+                            "player": player,
+                            "visits": 0,
+                            "value_sum": 0.0,
+                            "return_sum": 0.0,
+                            "entropy_sum": 0.0,
+                            "wins": 0,
+                            "losses": 0,
+                            "draws": 0,
+                        },
+                    )
+                    node["visits"] += 1
+                    node["value_sum"] += value
+                    node["return_sum"] += signed_return
+                    node["entropy_sum"] += entropy
+                    if signed_return > 0:
+                        node["wins"] += 1
+                    elif signed_return < 0:
+                        node["losses"] += 1
+                    else:
+                        node["draws"] += 1
+                break
+
+    items = []
+    for node in nodes.values():
+        visits = max(1, int(node["visits"]))
+        items.append(
+            {
+                "id": node["id"],
+                "ply": node["ply"],
+                "player": node["player"],
+                "visits": visits,
+                "value": node["value_sum"] / visits,
+                "return": node["return_sum"] / visits,
+                "entropy": node["entropy_sum"] / visits,
+                "wins": node["wins"],
+                "losses": node["losses"],
+                "draws": node["draws"],
+            }
+        )
+    items.sort(key=lambda item: (item["ply"], -item["visits"], item["id"]))
+    return {
+        "model_id": model_id,
+        "size": size,
+        "games": game_count,
+        "greedy": greedy,
+        "nodes": _sample_history(items, 1200),
+        "total_nodes": len(items),
+        "outcomes": {
+            "x_win_rate": outcomes[1] / game_count,
+            "o_win_rate": outcomes[-1] / game_count,
+            "draw_rate": outcomes[0] / game_count,
+        },
+    }
 
 
 ARTIFACT_FILES = {
@@ -843,6 +947,20 @@ async def tournament(request: Request) -> JSONResponse:
             size=int(payload.get("size", 3)),
             games=int(payload.get("games", 10)),
             seed=int(payload.get("seed", 0)),
+        )
+    )
+
+
+@app.post("/api/state-space/sample")
+async def state_space_sample(request: Request) -> JSONResponse:
+    payload = await request.json()
+    return JSONResponse(
+        _sample_state_space(
+            str(payload.get("model_id", "random")),
+            size=int(payload.get("size", 3)),
+            games=max(1, min(500, int(payload.get("games", 80)))),
+            seed=int(payload.get("seed", 0)),
+            greedy=bool(payload.get("greedy", False)),
         )
     )
 

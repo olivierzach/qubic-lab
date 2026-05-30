@@ -7,6 +7,7 @@ from fastapi import HTTPException
 
 from qubic_lab.web import analyze, artifacts, model_timeline, models, play_new, run, run_defaults, runs
 from qubic_lab.web import selfplay_generate
+from qubic_lab.web import state_space_sample
 from qubic_lab.web import reset_step_run, step_run
 
 
@@ -136,6 +137,24 @@ def test_selfplay_generate_endpoint_writes_dataset_manifest(tmp_path: Path, monk
     assert manifest["dataset"] == "dataset.jsonl"
     assert "offline imitation/RL dataset" in manifest["notes"][1]
     assert (Path(manifest["run_dir"]) / "dataset.jsonl").exists()
+
+
+def test_state_space_sample_endpoint_returns_reachable_nodes(tmp_path: Path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+
+    payload = _json(
+        asyncio.run(
+            state_space_sample(
+                JsonRequest({"model_id": "random", "size": 3, "games": 3, "seed": 7})
+            )
+        )
+    )
+
+    assert payload["model_id"] == "random"
+    assert payload["games"] == 3
+    assert payload["total_nodes"] > 0
+    assert payload["nodes"][0]["ply"] == 0
+    assert {"x_win_rate", "o_win_rate", "draw_rate"} <= set(payload["outcomes"])
 
 
 def test_step_run_advances_same_tabular_session(tmp_path: Path, monkeypatch):
