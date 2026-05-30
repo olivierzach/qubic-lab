@@ -400,7 +400,7 @@ function SnapshotViewer({ snapshot, snapshots, snapshotIndex, previousSnapshot, 
   const max = Math.max(0, snapshots.length - 1);
   const source = snapshot || analysis;
   return (
-    <section className="paper-section">
+    <section className="paper-section heatmap-window">
       <div className="section-head">
         <div>
           <h2>Policy Heatmap</h2>
@@ -418,6 +418,7 @@ function SnapshotViewer({ snapshot, snapshots, snapshotIndex, previousSnapshot, 
         </label>
       </div>
       <ValueHeatmap snapshot={source} previous={previousSnapshot} />
+      <LabBoard3D snapshot={source} />
       <LayerStackView snapshot={source} />
       <PolicyTable analysis={source} />
     </section>
@@ -552,6 +553,50 @@ function LayerStackView({ snapshot }) {
       </div>
     </div>
   );
+}
+
+function LabBoard3D({ snapshot }) {
+  const canvasRef = useRef(null);
+  const viewRef = useRef({ yaw: -0.74, pitch: 0.86, dragging: false, last: null });
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    const draw = () => drawLabBoard(ctx, canvas, snapshot, viewRef.current);
+    draw();
+
+    const down = (event) => {
+      viewRef.current.dragging = true;
+      viewRef.current.last = { x: event.clientX, y: event.clientY };
+      canvas.setPointerCapture(event.pointerId);
+    };
+    const move = (event) => {
+      if (!viewRef.current.dragging || !viewRef.current.last) return;
+      const dx = event.clientX - viewRef.current.last.x;
+      const dy = event.clientY - viewRef.current.last.y;
+      viewRef.current.yaw += dx * 0.01;
+      viewRef.current.pitch = Math.max(0.2, Math.min(1.34, viewRef.current.pitch + dy * 0.01));
+      viewRef.current.last = { x: event.clientX, y: event.clientY };
+      draw();
+    };
+    const up = () => {
+      viewRef.current.dragging = false;
+      viewRef.current.last = null;
+    };
+    canvas.addEventListener('pointerdown', down);
+    canvas.addEventListener('pointermove', move);
+    canvas.addEventListener('pointerup', up);
+    canvas.addEventListener('pointerleave', up);
+    return () => {
+      canvas.removeEventListener('pointerdown', down);
+      canvas.removeEventListener('pointermove', move);
+      canvas.removeEventListener('pointerup', up);
+      canvas.removeEventListener('pointerleave', up);
+    };
+  }, [snapshot]);
+
+  return <canvas ref={canvasRef} className="board3d lab-board3d" width="1200" height="720" />;
 }
 
 function PlayApp() {
@@ -737,6 +782,136 @@ function nearestPoint(analysis, view, canvas, sx, sy) {
   return best;
 }
 
+function tileCorners(p) {
+  const r = 0.43;
+  return [
+    { x: p.x - r, y: p.y - r, z: p.z },
+    { x: p.x + r, y: p.y - r, z: p.z },
+    { x: p.x + r, y: p.y + r, z: p.z },
+    { x: p.x - r, y: p.y + r, z: p.z },
+  ];
+}
+
+function drawProjectedTile(ctx, corners, fill, stroke, lineWidth = 1.2) {
+  ctx.beginPath();
+  corners.forEach((p, index) => {
+    if (index === 0) ctx.moveTo(p.x, p.y);
+    else ctx.lineTo(p.x, p.y);
+  });
+  ctx.closePath();
+  ctx.fillStyle = fill;
+  ctx.fill();
+  ctx.strokeStyle = stroke;
+  ctx.lineWidth = lineWidth;
+  ctx.stroke();
+}
+
+function drawLabBoard(ctx, canvas, snapshot, view) {
+  const w = canvas.width;
+  const h = canvas.height;
+  ctx.clearRect(0, 0, w, h);
+  ctx.fillStyle = '#111318';
+  ctx.fillRect(0, 0, w, h);
+
+  if (!snapshot?.heatmap) {
+    ctx.fillStyle = '#a9a192';
+    ctx.font = '22px Georgia, serif';
+    ctx.fillText('No value surface loaded.', 34, 46);
+    return;
+  }
+
+  const size = snapshot.heatmap.length;
+  const points = flattenHeatmap(snapshot.heatmap);
+  const maxAbs = Math.max(1e-4, ...points.map((p) => Math.abs(p.value)));
+  const scale = Math.min(w, h) / (size <= 3 ? 4.15 : 5.1);
+  const cx = w * 0.5;
+  const cy = h * 0.54;
+  const board = snapshot.board || [];
+  const occupied = new Map();
+  board.forEach((layer, z) => layer?.forEach((row, y) => row?.forEach((v, x) => {
+    if (v) occupied.set(moveIndex(x, y, z, size), v);
+  })));
+  const policy = policyRankMap(snapshot, 10);
+  const topMove = [...policy.values()][0]?.move;
+  const topRanks = new Set([...policy.values()].map((m) => m.move));
+
+  ctx.save();
+  ctx.globalAlpha = 0.82;
+  drawCubeGrid(ctx, size, view, scale, cx, cy);
+  ctx.restore();
+
+  drawArrows(ctx, { ...snapshot, top_moves: [...policy.values()] }, view, scale, cx, cy);
+
+  const tiles = points
+    .map((p) => {
+      const screen = project(p, size, view, scale, cx, cy);
+      const corners = tileCorners(p).map((corner) => project(corner, size, view, scale, cx, cy));
+      return { ...p, screen, corners };
+    })
+    .sort((a, b) => a.screen.depth - b.screen.depth);
+
+  for (const p of tiles) {
+    const idx = moveIndex(p.x, p.y, p.z, size);
+    const occ = occupied.get(idx);
+    const norm = p.value / maxAbs;
+    const ranked = policy.get(`${p.x}-${p.y}-${p.z}`);
+    const fill = occ === 1 ? 'rgba(98,176,141,.92)' : occ === -1 ? 'rgba(208,106,88,.92)' : valueColor(norm, topRanks.has(idx) ? 0.9 : 0.58);
+    const stroke = idx === topMove ? '#d5a447' : ranked ? 'rgba(213,164,71,.72)' : 'rgba(240,234,220,.32)';
+    drawProjectedTile(ctx, p.corners, fill, stroke, idx === topMove ? 3.4 : ranked ? 2.2 : 1.05);
+
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    if (occ) {
+      ctx.fillStyle = '#111318';
+      ctx.font = 'bold 24px Georgia, serif';
+      ctx.fillText(occ === 1 ? 'X' : 'O', p.screen.x, p.screen.y);
+    } else if (size <= 4) {
+      ctx.fillStyle = Math.abs(norm) > 0.55 ? '#111318' : '#f0eadc';
+      ctx.font = '700 12px ui-monospace, SFMono-Regular, Menlo, monospace';
+      ctx.fillText(fixed(p.value, size <= 3 ? 2 : 1), p.screen.x, p.screen.y + (ranked ? 8 : 0));
+    }
+    if (ranked) {
+      ctx.fillStyle = '#d5a447';
+      ctx.beginPath();
+      ctx.arc(p.screen.x, p.screen.y - 16, 12, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = '#111318';
+      ctx.font = '800 12px ui-monospace, SFMono-Regular, Menlo, monospace';
+      ctx.fillText(String(ranked.rank), p.screen.x, p.screen.y - 16);
+    }
+  }
+
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'alphabetic';
+  ctx.fillStyle = '#f0eadc';
+  ctx.font = '18px Georgia, serif';
+  const best = [...policy.values()][0];
+  ctx.fillText(best ? `best (${best.x},${best.y},${best.z})  p=${fixed(best.prob ?? best.value, 3)}  value=${fixed(snapshot.value)}` : 'value surface', 30, 36);
+  ctx.fillStyle = '#a9a192';
+  ctx.font = '12px ui-monospace, SFMono-Regular, Menlo, monospace';
+  ctx.fillText(`n=${size}  gold=policy rank  green/red=value`, 30, h - 24);
+}
+
+function drawCubeGrid(ctx, size, view, scale, cx, cy) {
+  const line = (a, b, color, width = 1) => {
+    const pa = project(a, size, view, scale, cx, cy);
+    const pb = project(b, size, view, scale, cx, cy);
+    ctx.strokeStyle = color;
+    ctx.lineWidth = width;
+    ctx.beginPath();
+    ctx.moveTo(pa.x, pa.y);
+    ctx.lineTo(pb.x, pb.y);
+    ctx.stroke();
+  };
+  for (let y = 0; y < size; y += 1) {
+    for (let z = 0; z < size; z += 1) line({ x: 0, y, z }, { x: size - 1, y, z }, 'rgba(196,184,160,.18)');
+    for (let x = 0; x < size; x += 1) line({ x, y, z: 0 }, { x, y, z: size - 1 }, 'rgba(196,184,160,.18)');
+  }
+  for (let x = 0; x < size; x += 1) {
+    for (let z = 0; z < size; z += 1) line({ x, y: 0, z }, { x, y: size - 1, z }, 'rgba(196,184,160,.1)');
+  }
+}
+
 function drawBoard(ctx, canvas, analysis, view, playable) {
   const w = canvas.width;
   const h = canvas.height;
@@ -827,10 +1002,11 @@ function drawArrows(ctx, analysis, view, scale, cx, cy) {
     const a = project(center, size, view, scale, cx, cy);
     const b = project(target, size, view, scale, cx, cy);
     const end = { x: a.x + (b.x - a.x) * 0.82, y: a.y + (b.y - a.y) * 0.82 };
-    const alpha = Math.max(0.18, Math.min(0.9, move.prob * 8));
+    const weight = Math.min(1, Math.abs(Number(move.prob ?? move.value ?? 0)));
+    const alpha = Math.max(0.18, Math.min(0.9, weight * 8));
     const color = `rgba(213,164,71,${alpha})`;
     ctx.strokeStyle = color;
-    ctx.lineWidth = 2 + 5 * move.prob;
+    ctx.lineWidth = 2 + 5 * weight;
     ctx.beginPath();
     ctx.moveTo(a.x, a.y);
     ctx.lineTo(end.x, end.y);
@@ -859,7 +1035,7 @@ function MetricsChart({ history }) {
     if (!canvas) return;
     drawMetrics(canvas.getContext('2d'), canvas, history || []);
   }, [history]);
-  return <canvas ref={canvasRef} className="chart" width="1200" height="640" />;
+  return <canvas ref={canvasRef} className="chart" width="1200" height="900" />;
 }
 
 function drawMetrics(ctx, canvas, history) {
@@ -878,10 +1054,14 @@ function drawMetrics(ctx, canvas, history) {
   const xs = history.map((d) => d.episode || d.step || 0);
   const minX = Math.min(...xs);
   const maxX = Math.max(...xs);
+  const margin = { left: 78, right: 42, top: 62, bottom: 54 };
+  const gap = 46;
+  const panelH = (canvas.height - margin.top - margin.bottom - gap * 2) / 3;
+  const panelW = canvas.width - margin.left - margin.right;
   const panels = [
-    { x: 78, y: 60, w: 1080, h: 150, title: 'Outcome rates', ymin: 0, ymax: 1 },
-    { x: 78, y: 260, w: 1080, h: 130, title: 'Value and update magnitude', ymin: -1, ymax: 1 },
-    { x: 78, y: 450, w: 1080, h: 130, title: 'Policy statistics', ymin: 0, ymax: Math.max(0.05, ...history.map((d) => Number(d.entropy || 0)), ...history.map((d) => Number(d.approx_kl || 0))) },
+    { x: margin.left, y: margin.top, w: panelW, h: panelH, title: 'Outcome rates', ymin: 0, ymax: 1 },
+    { x: margin.left, y: margin.top + panelH + gap, w: panelW, h: panelH, title: 'Value and update magnitude', ymin: -1, ymax: 1 },
+    { x: margin.left, y: margin.top + (panelH + gap) * 2, w: panelW, h: panelH, title: 'Policy statistics', ymin: 0, ymax: Math.max(0.05, ...history.map((d) => Number(d.entropy || 0)), ...history.map((d) => Number(d.approx_kl || 0))) },
   ];
   for (const p of panels) axes(ctx, p);
   series(ctx, panels[0], history, minX, maxX, (d) => d.recent?.x_win_rate, '#62b08d');
