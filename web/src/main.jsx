@@ -7,6 +7,7 @@ const DEMO_MODE = import.meta.env.VITE_STATIC_DEMO === '1'
 const BASE_PATH = (import.meta.env.BASE_URL || '/').replace(/\/$/, '');
 const appHref = (path = '/') => {
   const normalized = path.startsWith('/') ? path : `/${path}`;
+  if (DEMO_MODE) return `${BASE_PATH || '/'}#${normalized}`;
   return `${BASE_PATH}${normalized}` || '/';
 };
 
@@ -2181,9 +2182,11 @@ function MoveList({ game }) {
   );
 }
 
-const path = BASE_PATH && window.location.pathname.startsWith(`${BASE_PATH}/`)
-  ? window.location.pathname.slice(BASE_PATH.length)
-  : window.location.pathname;
+const path = DEMO_MODE && window.location.hash.startsWith('#/')
+  ? window.location.hash.slice(1)
+  : BASE_PATH && window.location.pathname.startsWith(`${BASE_PATH}/`)
+    ? window.location.pathname.slice(BASE_PATH.length)
+    : window.location.pathname;
 const root = createRoot(document.getElementById('root'));
 if (path.startsWith('/play')) root.render(<PlayApp />);
 else if (path.startsWith('/lab') || path.startsWith('/runs')) root.render(<LabApp />);
