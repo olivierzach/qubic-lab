@@ -289,10 +289,6 @@ function LabApp() {
         <section className="lab-grid">
           <aside className="control-rail paper-section">
             <div className="rail-title">
-              <div>
-                <p className="kicker">Experiment record</p>
-                <h2>Qubic Lab</h2>
-              </div>
               <div className="run-state compact-state">
                 <span>{liveState?.running ? 'running' : 'idle'}</span>
                 <span>{sourceMode === 'live' ? 'live' : 'saved'}</span>
@@ -300,7 +296,6 @@ function LabApp() {
               </div>
             </div>
 
-            <h2>Run Parameters</h2>
             <RunControls
               config={runConfig}
               onChange={updateConfig}
@@ -311,7 +306,6 @@ function LabApp() {
               onResetStep={resetStepRun}
             />
 
-            <h2>Saved Sources</h2>
             <button onClick={showLive} disabled={!liveState?.latest}>Show live state</button>
             <label>Saved run
               <select value={selectedRun} onChange={(e) => setSelectedRun(e.target.value)}>
@@ -335,12 +329,6 @@ function LabApp() {
             <RunSummary latest={runData.latest} analysis={analysis} />
             <div className="lab-focus-grid">
               <section className="paper-section plot-window">
-                <div className="section-head">
-                  <div>
-                    <h2>Training Plot</h2>
-                    <p>Outcome rates, value/update magnitude, entropy, and KL.</p>
-                  </div>
-                </div>
                 <MetricsChart history={runData.history || []} />
               </section>
               <SnapshotViewer
@@ -428,7 +416,6 @@ function SystemInputs({ config, selected, latest, compact = false }) {
   ];
   return (
     <section className={compact ? 'sidebar-block' : 'paper-section'}>
-      <h2>System Inputs</h2>
       <dl className="input-table">
         {rows.map(([key, value]) => (
           <React.Fragment key={key}>
@@ -447,21 +434,12 @@ function SnapshotViewer({ snapshot, snapshots, snapshotIndex, previousSnapshot, 
   return (
     <>
       <section className="paper-section board-window">
-        <div className="section-head">
-          <div>
-            <h2>3D Value Surface</h2>
-            <p>Projected Qubic board with value-colored cells and ranked policy targets.</p>
-          </div>
-        </div>
         <LabBoard3D snapshot={source} />
       </section>
 
       <section className="paper-section heatmap-window">
-        <div className="section-head">
-          <div>
-            <h2>Policy Heatmap</h2>
-            <p>{snapshots.length ? `Snapshot ${snapshotIndex + 1} of ${snapshots.length}` : 'Current or analyzed position'}</p>
-          </div>
+        <div className="snapshot-toolbar">
+          <span>{snapshots.length ? `${snapshotIndex + 1}/${snapshots.length}` : 'current'}</span>
           <label className="range-label">time
             <input
               type="range"
@@ -477,12 +455,6 @@ function SnapshotViewer({ snapshot, snapshots, snapshotIndex, previousSnapshot, 
       </section>
 
       <section className="paper-section policy-window">
-        <div className="section-head">
-          <div>
-            <h2>Policy Table</h2>
-            <p>Top legal targets from the current snapshot.</p>
-          </div>
-        </div>
         <PolicyTable analysis={source} />
       </section>
     </>
@@ -1106,20 +1078,17 @@ function drawMetrics(ctx, canvas, history) {
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   ctx.fillStyle = '#111318';
   ctx.fillRect(0, 0, canvas.width, canvas.height);
-  ctx.fillStyle = '#f0eadc';
-  ctx.font = '22px Georgia, serif';
-  ctx.fillText('Training diagnostics', 56, 34);
   if (history.length < 2) {
     ctx.fillStyle = '#a9a192';
     ctx.font = '17px Georgia, serif';
-    ctx.fillText('Load or start a run to draw live plots.', 56, 70);
+    ctx.fillText('Load, start, or step a run to draw live plots.', 44, 44);
     return;
   }
   const xs = history.map((d) => d.episode || d.step || 0);
   const minX = Math.min(...xs);
   const maxX = Math.max(...xs);
-  const margin = { left: 78, right: 42, top: 62, bottom: 54 };
-  const gap = 46;
+  const margin = { left: 78, right: 34, top: 34, bottom: 48 };
+  const gap = 34;
   const panelH = (canvas.height - margin.top - margin.bottom - gap * 2) / 3;
   const panelW = canvas.width - margin.left - margin.right;
   const panels = [
@@ -1239,7 +1208,6 @@ function PolicyTable({ analysis }) {
 function ModelCatalog({ models, selectedModel, onSelect }) {
   return (
     <section className="paper-section compact-section">
-      <h2>Model Catalog</h2>
       <div className="list-stack">
         {models.slice(0, 12).map((model) => (
           <button
@@ -1261,7 +1229,6 @@ function Artifacts({ latest, artifacts }) {
   const files = artifacts || latest.artifacts || [];
   return (
     <section className="paper-section compact-section">
-      <h2>Artifacts</h2>
       <div className="artifact-row">
         {files.map((item) => (
           <a key={item.file} href={item.url || `/api/artifact?run_dir=${encodeURIComponent(latest.run_dir)}&file=${item.file}`} target="_blank" rel="noreferrer">
@@ -1278,7 +1245,6 @@ function Artifacts({ latest, artifacts }) {
 function RunList({ runs, onLoad }) {
   return (
     <section className="paper-section compact-section">
-      <h2>Saved Runs</h2>
       <div className="list-stack">
         {runs.slice(0, 12).map((r) => (
           <button className="row-button" key={r.run_dir} onClick={() => onLoad(r.run_dir)}>

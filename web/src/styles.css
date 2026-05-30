@@ -133,7 +133,7 @@ label {
   background: rgba(21, 24, 32, .88);
   border: 1px solid var(--line);
   box-shadow: 0 1px 0 rgba(240, 234, 220, .04);
-  padding: 16px;
+  padding: 12px;
   min-width: 0;
 }
 .title-row {
@@ -167,7 +167,7 @@ label {
 }
 .control-rail {
   display: grid;
-  gap: 12px;
+  gap: 10px;
   position: sticky;
   top: 14px;
   max-height: calc(100vh - 28px);
@@ -175,10 +175,10 @@ label {
 }
 .rail-title {
   display: flex;
-  justify-content: space-between;
+  justify-content: start;
   gap: 10px;
   align-items: start;
-  padding-bottom: 10px;
+  padding-bottom: 8px;
   border-bottom: 1px solid var(--line);
 }
 .rail-title h2 {
@@ -193,7 +193,7 @@ label {
 }
 .sidebar-block {
   border-top: 1px solid var(--line);
-  padding-top: 10px;
+  padding-top: 8px;
 }
 .form-grid {
   display: grid;
@@ -204,7 +204,7 @@ label {
 
 .paper-stack {
   display: grid;
-  gap: 14px;
+  gap: 10px;
   min-width: 0;
 }
 .lab-focus-grid {
@@ -213,22 +213,16 @@ label {
   grid-template-areas:
     "plot board"
     "heatmap policy";
-  gap: 14px;
+  gap: 10px;
   align-items: start;
 }
 .plot-window {
   grid-area: plot;
   min-height: 0;
-  display: grid;
-  grid-template-rows: auto auto;
-}
-.plot-window .section-head {
-  margin-bottom: 6px;
+  display: block;
 }
 .board-window {
   grid-area: board;
-  display: grid;
-  grid-template-rows: auto auto;
 }
 .heatmap-window {
   grid-area: heatmap;
@@ -238,7 +232,7 @@ label {
 .policy-window {
   grid-area: policy;
   align-self: stretch;
-  max-height: 340px;
+  max-height: 322px;
   overflow: auto;
 }
 .two-column {
@@ -247,6 +241,7 @@ label {
   gap: 14px;
 }
 .compact-section { align-content: start; }
+.compact-section:empty { display: none; }
 .section-head {
   display: flex;
   align-items: end;
@@ -255,8 +250,19 @@ label {
   margin-bottom: 10px;
 }
 .section-head p { margin-bottom: 0; font-size: 13px; }
+.snapshot-toolbar {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 10px;
+  align-items: center;
+  margin-bottom: 8px;
+}
+.snapshot-toolbar > span {
+  color: var(--muted);
+  font: 12px ui-monospace, SFMono-Regular, Menlo, monospace;
+}
 .range-label {
-  min-width: 240px;
+  min-width: 0;
   color: var(--muted);
   font: 12px ui-monospace, SFMono-Regular, Menlo, monospace;
 }
@@ -287,12 +293,12 @@ label {
   border: 1px solid var(--line);
 }
 .metric {
-  min-height: 66px;
+  min-height: 58px;
   background: rgba(15, 17, 21, .72);
-  padding: 9px;
+  padding: 8px;
   display: grid;
   align-content: space-between;
-  gap: 6px;
+  gap: 4px;
 }
 .metric span {
   color: var(--muted);
@@ -300,7 +306,7 @@ label {
   text-transform: uppercase;
 }
 .metric strong {
-  font: 600 21px/1 Georgia, "Times New Roman", serif;
+  font: 600 19px/1 Georgia, "Times New Roman", serif;
   overflow-wrap: anywhere;
 }
 .policy-cell {
@@ -330,12 +336,12 @@ label {
 .chart { aspect-ratio: 15 / 8; }
 .lab-board3d {
   aspect-ratio: 5 / 3;
-  min-height: 260px;
+  min-height: 250px;
 }
 
 .value-heatmap {
   display: grid;
-  gap: 10px;
+  gap: 8px;
   margin-bottom: 0;
 }
 .value-heatmap.empty {
@@ -352,8 +358,8 @@ label {
 }
 .layer-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(178px, 1fr));
-  gap: 10px;
+  grid-template-columns: repeat(auto-fit, minmax(172px, 1fr));
+  gap: 8px;
 }
 .layer-panel {
   border: 1px solid var(--line);
@@ -373,7 +379,7 @@ label {
   padding: 1px;
 }
 .heat-cell {
-  min-height: 50px;
+  min-height: 46px;
   display: grid;
   place-items: center;
   align-content: center;
@@ -418,7 +424,7 @@ label {
 }
 .policy-table th, .policy-table td {
   border-bottom: 1px solid var(--line);
-  padding: 7px 6px;
+  padding: 6px;
   text-align: left;
 }
 .policy-table th {
